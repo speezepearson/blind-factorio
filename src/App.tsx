@@ -125,12 +125,21 @@ export default function App() {
     );
   };
 
-  const eraseAt = (cell: Cell) => {
+  // Wipe the copy-sized square anchored on the cursor's fine cell: pumps
+  // inside it go, and machines overlapping it even partially go whole.
+  const eraseRegion = (anchor: Cell) => {
+    const n = copyCells();
+    const tl = squareTL(anchor, n);
     const world = worldRef.current;
-    const k = cellKey(cell[0], cell[1]);
-    if (world.pumps.delete(k)) return;
-    const pm = machineCellMap(placeAll(world)).get(k);
-    if (pm) world.machines = world.machines.filter((m) => m.id !== pm.machine.id);
+    const inSquare = ([x, y]: Cell) =>
+      x >= tl[0] && x < tl[0] + n && y >= tl[1] && y < tl[1] + n;
+    for (const k of [...world.pumps.keys()]) {
+      if (inSquare(parseKey(k))) world.pumps.delete(k);
+    }
+    const doomed = new Set(
+      placeAll(world).filter((pm) => pm.cells.some(inSquare)).map((pm) => pm.machine.id),
+    );
+    if (doomed.size > 0) world.machines = world.machines.filter((m) => !doomed.has(m.id));
   };
 
   const commitPipePath = (path: Cell[]) => {
@@ -383,24 +392,30 @@ export default function App() {
       }
     }
 
-    // copy/paste preview — deliberately coarse: only supercells are
-    // highlighted, even though the real region is fine-grid-precise
+    // copy/paste and erase previews — deliberately coarse: only supercells
+    // are highlighted, even though the real region is fine-grid-precise
     const t = toolRef.current;
     const hc = hoverCellRef.current;
-    if (t.kind === 'copy' && hc) {
-      const clip = clipboardRef.current;
+    if ((t.kind === 'copy' || t.kind === 'erase') && hc) {
+      const clip = t.kind === 'copy' ? clipboardRef.current : null;
       const n = clip ? clip.size : copyCells();
       const nSuper = Math.max(1, Math.round(n / S)); // square side, in supercells
       const sx = Math.floor(hc[0] / S);
       const sy = Math.floor(hc[1] / S);
       const tlx = sx - Math.floor(nSuper / 2);
       const tly = sy - Math.floor(nSuper / 2);
-      ctx.fillStyle = clip ? 'rgba(47, 127, 209, 0.14)' : 'rgba(74, 70, 64, 0.10)';
+      const [weak, strong, line] =
+        t.kind === 'erase'
+          ? ['rgba(214, 60, 60, 0.10)', 'rgba(214, 60, 60, 0.20)', '#d63c3c']
+          : clip
+            ? ['rgba(47, 127, 209, 0.14)', 'rgba(47, 127, 209, 0.22)', '#2f7fd1']
+            : ['rgba(74, 70, 64, 0.10)', 'rgba(74, 70, 64, 0.18)', '#4a4640'];
+      ctx.fillStyle = weak;
       ctx.fillRect(tlx * S * CELL, tly * S * CELL, nSuper * S * CELL, nSuper * S * CELL);
       // the supercell under the cursor, a shade stronger
-      ctx.fillStyle = clip ? 'rgba(47, 127, 209, 0.22)' : 'rgba(74, 70, 64, 0.18)';
+      ctx.fillStyle = strong;
       ctx.fillRect(sx * S * CELL, sy * S * CELL, S * CELL, S * CELL);
-      ctx.strokeStyle = clip ? '#2f7fd1' : '#4a4640';
+      ctx.strokeStyle = line;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 4]);
       ctx.strokeRect(tlx * S * CELL + 0.5, tly * S * CELL + 0.5, nSuper * S * CELL, nSuper * S * CELL);
@@ -408,7 +423,7 @@ export default function App() {
     }
 
     // hover highlight
-    if (hc && t.kind !== 'copy') {
+    if (hc && t.kind === 'pipe') {
       ctx.strokeStyle = 'rgba(60,60,60,0.5)';
       ctx.lineWidth = 1.5;
       ctx.strokeRect(hc[0] * CELL + 1, hc[1] * CELL + 1, CELL - 2, CELL - 2);
@@ -451,7 +466,7 @@ export default function App() {
       dragRef.current = { mode: 'pipe', path: [cell] };
     } else if (t.kind === 'erase') {
       dragRef.current = { mode: 'erase', last: cell };
-      eraseAt(cell);
+      eraseRegion(cell);
     } else {
       const clip = clipboardRef.current;
       if (clip) pasteClipboard(squareTL(cell, clip.size), clip);
@@ -480,7 +495,7 @@ export default function App() {
       while (lx !== cell[0] || ly !== cell[1]) {
         if (lx !== cell[0]) lx += Math.sign(cell[0] - lx);
         else ly += Math.sign(cell[1] - ly);
-        eraseAt([lx, ly]);
+        eraseRegion([lx, ly]);
       }
       drag.last = cell;
     }
@@ -584,7 +599,7 @@ export default function App() {
         <ul className="help">
           <li><b>Pipes:</b> click-drag to draw a line of pumps — you can start the drag on a machine. Drag backwards to undo.</li>
           <li><b>Copy/paste:</b> stamp out squares of factory, machines included.</li>
-          <li><b>Erase:</b> click/drag to remove pumps; click a machine to remove it.</li>
+          <li><b>Erase:</b> click/drag to wipe the highlighted region — pumps inside it are removed, and machines overlapping it even partially are removed whole.</li>
           <li>Hover anything to inspect its rule and live flows here.</li>
           <li>Blue edges are input ports, orange edges are output ports.</li>
         </ul>
