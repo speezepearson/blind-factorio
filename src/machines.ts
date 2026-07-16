@@ -75,8 +75,9 @@ export const MACHINE_TYPES: MachineType[] = [
     ports: [
       { id: 'out', label: 'A', kind: 'out', edges: scaleEdges([[[0, 0], 0], [[1, 0], 0]]) },
     ],
-    ruleText: 'Always produces 2 L/s of red fluid at port A. Needs no inputs.',
-    compute: () => ({ out: { [RED]: 2 } }),
+    params: [{ key: 'rate', label: 'Production rate (L/s)', default: 2, min: 0, max: 10, step: 0.1 }],
+    ruleText: 'Produces red fluid at port A at its configured rate (default 2 L/s). Needs no inputs.',
+    compute: (_inputs, params) => ({ out: { [RED]: params.rate } }),
   },
   {
     id: 'green-spring',
@@ -86,8 +87,9 @@ export const MACHINE_TYPES: MachineType[] = [
     ports: [
       { id: 'out', label: 'A', kind: 'out', edges: scaleEdges([[[0, 0], 0], [[1, 0], 0]]) },
     ],
-    ruleText: 'Always produces 2 L/s of green fluid at port A. Needs no inputs.',
-    compute: () => ({ out: { [GREEN]: 2 } }),
+    params: [{ key: 'rate', label: 'Production rate (L/s)', default: 2, min: 0, max: 10, step: 0.1 }],
+    ruleText: 'Produces green fluid at port A at its configured rate (default 2 L/s). Needs no inputs.',
+    compute: (_inputs, params) => ({ out: { [GREEN]: params.rate } }),
   },
   {
     id: 'reactor',

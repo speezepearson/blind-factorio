@@ -121,6 +121,17 @@ canvas {
   margin-bottom: 6px;
 }
 
+.panel .param {
+  display: block;
+  margin: 10px 0;
+}
+
+.panel .param input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+}
+
 .dim {
   color: #999;
 }

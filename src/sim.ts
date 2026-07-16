@@ -55,9 +55,13 @@ export function step(world: World, prev: SimState): SimState {
       inputs[port.def.id] = fm;
     }
 
+    const params: Record<string, number> = {};
+    for (const pd of pm.type.params ?? []) params[pd.key] = pd.default;
+    Object.assign(params, pm.machine.params);
+
     let outputs: Record<string, FluidMap>;
     try {
-      outputs = pm.type.compute(inputs) ?? {};
+      outputs = pm.type.compute(inputs, params) ?? {};
     } catch {
       outputs = {};
     }

@@ -15,13 +15,13 @@ const GRID_H = 110;
 const CELL = 6;
 const TICK_MS = 110;
 
-type Tool = { kind: 'pipe' } | { kind: 'copy' } | { kind: 'erase' };
+type Tool = { kind: 'pipe' } | { kind: 'copy' } | { kind: 'erase' } | { kind: 'edit' };
 
 type Hover = { kind: 'machine'; machineId: number } | { kind: 'pump'; key: string } | null;
 
 interface Clipboard {
   size: number;
-  machines: Array<{ typeId: string; rotation: number; rel: Cell }>;
+  machines: Array<{ typeId: string; rotation: number; rel: Cell; params?: Record<string, number> }>;
   pumps: Array<{ rel: Cell; pump: Pump }>;
 }
 
@@ -66,6 +66,7 @@ export default function App() {
   const [copySuper, setCopySuper] = useState(3); // copy square side, in supercells (odd)
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   const [hideLabels, setHideLabels] = useState(false);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hover, setHover] = useState<Hover>(null);
   const [, setTick] = useState(0); // re-render so the info panel shows live flows
 
@@ -81,6 +82,8 @@ export default function App() {
   clipboardRef.current = clipboard;
   const hideLabelsRef = useRef(hideLabels);
   hideLabelsRef.current = hideLabels;
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
   const hoverCellRef = useRef<Cell | null>(null);
   const dragRef = useRef<{ mode: 'pipe'; path: Cell[] } | { mode: 'erase'; last: Cell } | null>(null);
 
@@ -183,6 +186,7 @@ export default function App() {
         typeId: pm.machine.typeId,
         rotation: pm.machine.rotation,
         rel: [pm.machine.origin[0] - tl[0], pm.machine.origin[1] - tl[1]] as Cell,
+        params: pm.machine.params ? { ...pm.machine.params } : undefined,
       }));
     const pumps: Clipboard['pumps'] = [];
     for (const [k, list] of world.pumps) {
@@ -204,6 +208,7 @@ export default function App() {
         typeId: m.typeId,
         origin: [tl[0] + m.rel[0], tl[1] + m.rel[1]],
         rotation: m.rotation,
+        params: m.params ? { ...m.params } : undefined,
       };
       if (machinePlacementOk(placeMachine(machine, TYPE_BY_ID[m.typeId]))) {
         world.machines.push(machine);
@@ -422,6 +427,29 @@ export default function App() {
       ctx.setLineDash([]);
     }
 
+    // selection outline in edit mode
+    if (t.kind === 'edit' && selectedIdRef.current !== null) {
+      const sel = placed.find((pm) => pm.machine.id === selectedIdRef.current);
+      if (sel) {
+        const cellSet = new Set(sel.cells.map(([x, y]) => cellKey(x, y)));
+        ctx.strokeStyle = '#2f7fd1';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        for (const [x, y] of sel.cells) {
+          for (let s = 0 as Side; s < 4; s = (s + 1) as Side) {
+            if (cellSet.has(cellKey(x + DX[s], y + DY[s]))) continue;
+            const x0 = x * CELL + (s === 1 ? CELL : 0);
+            const y0 = y * CELL + (s === 2 ? CELL : 0);
+            const x1 = x * CELL + (s === 3 ? 0 : CELL);
+            const y1 = y * CELL + (s === 0 ? 0 : CELL);
+            ctx.moveTo(x0, y0);
+            ctx.lineTo(x1, y1);
+          }
+        }
+        ctx.stroke();
+      }
+    }
+
     // hover highlight
     if (hc && t.kind === 'pipe') {
       ctx.strokeStyle = 'rgba(60,60,60,0.5)';
@@ -452,7 +480,7 @@ export default function App() {
   useEffect(() => {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hideLabels, clipboard, tool, copySuper, superSize]);
+  }, [hideLabels, clipboard, tool, copySuper, superSize, selectedId]);
 
   // ---- mouse handlers ----------------------------------------------------
 
@@ -467,6 +495,9 @@ export default function App() {
     } else if (t.kind === 'erase') {
       dragRef.current = { mode: 'erase', last: cell };
       eraseRegion(cell);
+    } else if (t.kind === 'edit') {
+      const pm = machineCellMap(placeAll(worldRef.current)).get(cellKey(cell[0], cell[1]));
+      setSelectedId(pm ? pm.machine.id : null);
     } else {
       const clip = clipboardRef.current;
       if (clip) pasteClipboard(squareTL(cell, clip.size), clip);
@@ -514,6 +545,47 @@ export default function App() {
   const renderPanel = () => {
     const world = worldRef.current;
     const sim = simRef.current;
+    if (tool.kind === 'edit') {
+      const machine = world.machines.find((m) => m.id === selectedId);
+      if (!machine) {
+        return (
+          <>
+            <h2>Edit</h2>
+            <p className="rule">Click a machine to adjust its parameters.</p>
+          </>
+        );
+      }
+      const type = TYPE_BY_ID[machine.typeId];
+      const defs = type.params ?? [];
+      return (
+        <>
+          <h2>Edit: {hideLabels ? 'Machine' : type.name}</h2>
+          {defs.length === 0 ? (
+            <p className="rule dim">This machine has no adjustable parameters.</p>
+          ) : (
+            defs.map((pd) => {
+              const value = machine.params?.[pd.key] ?? pd.default;
+              return (
+                <label key={pd.key} className="param">
+                  {pd.label}: <b>{value}</b>
+                  <input
+                    type="range"
+                    min={pd.min}
+                    max={pd.max}
+                    step={pd.step}
+                    value={value}
+                    onChange={(e) => {
+                      machine.params = { ...machine.params, [pd.key]: Number(e.target.value) };
+                      setTick((t) => t + 1);
+                    }}
+                  />
+                </label>
+              );
+            })
+          )}
+        </>
+      );
+    }
     if (hover?.kind === 'machine') {
       const machine = world.machines.find((m) => m.id === hover.machineId);
       if (!machine) return null;
@@ -629,6 +701,9 @@ export default function App() {
         </label>
         <button className={tool.kind === 'erase' ? 'active' : ''} onClick={() => setTool({ kind: 'erase' })}>
           Erase
+        </button>
+        <button className={tool.kind === 'edit' ? 'active' : ''} onClick={() => setTool({ kind: 'edit' })}>
+          Edit
         </button>
         <span className="spacer" />
         <label className="slider">
