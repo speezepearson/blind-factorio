@@ -1,0 +1,118 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  height: 100vh;
+  box-sizing: border-box;
+}
+
+.toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.toolbar .spacer {
+  flex: 1;
+}
+
+.toolbar button {
+  font: 13px/1.2 var(--sans);
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #c9c5bc;
+  border-bottom-width: 3px;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+}
+
+.toolbar button:hover {
+  background: #f3f1ea;
+}
+
+.toolbar button.active {
+  background: #2b2823;
+  color: #fff;
+  border-color: #2b2823;
+}
+
+.main {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-height: 0;
+}
+
+canvas {
+  border: 1px solid #c9c5bc;
+  border-radius: 4px;
+  cursor: crosshair;
+  max-width: calc(100% - 300px);
+  height: auto;
+}
+
+.panel {
+  width: 280px;
+  flex: none;
+  background: #fff;
+  border: 1px solid #c9c5bc;
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #333;
+}
+
+.panel h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  color: #111;
+}
+
+.panel .rule {
+  margin: 0 0 10px;
+  color: #555;
+}
+
+.panel table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.panel td {
+  padding: 3px 4px;
+  border-top: 1px solid #eee;
+  vertical-align: top;
+}
+
+.panel .help {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.panel .help li {
+  margin-bottom: 6px;
+}
+
+.dim {
+  color: #999;
+}
+
+.fluid {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  white-space: nowrap;
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}

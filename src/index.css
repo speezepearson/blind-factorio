@@ -1,0 +1,13 @@
+:root {
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  font: 14px/1.4 var(--sans);
+  color-scheme: light;
+}
+
+* {
+  margin: 0;
+}
+
+body {
+  background: #efede7;
+}
