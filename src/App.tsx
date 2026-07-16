@@ -62,7 +62,8 @@ export default function App() {
   const simRef = useRef<SimState>(initial.sim);
 
   const [tool, setTool] = useState<Tool>({ kind: 'pipe' });
-  const [copySize, setCopySize] = useState(10);
+  const [superSize, setSuperSize] = useState(6); // visual supercell size, in fine cells
+  const [copySuper, setCopySuper] = useState(3); // copy square side, in supercells (odd)
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   const [hideLabels, setHideLabels] = useState(false);
   const [hover, setHover] = useState<Hover>(null);
@@ -70,8 +71,12 @@ export default function App() {
 
   const toolRef = useRef(tool);
   toolRef.current = tool;
-  const copySizeRef = useRef(copySize);
-  copySizeRef.current = copySize;
+  const superSizeRef = useRef(superSize);
+  superSizeRef.current = superSize;
+  const copySuperRef = useRef(copySuper);
+  copySuperRef.current = copySuper;
+  // the real copy region side in fine cells
+  const copyCells = () => copySuperRef.current * superSizeRef.current;
   const clipboardRef = useRef(clipboard);
   clipboardRef.current = clipboard;
   const hideLabelsRef = useRef(hideLabels);
@@ -159,7 +164,7 @@ export default function App() {
   const squareTL = (cell: Cell, n: number): Cell => [cell[0] - Math.floor(n / 2), cell[1] - Math.floor(n / 2)];
 
   const captureRegion = (tl: Cell): Clipboard => {
-    const n = copySizeRef.current;
+    const n = copyCells();
     const world = worldRef.current;
     const inSquare = ([x, y]: Cell) =>
       x >= tl[0] && x < tl[0] + n && y >= tl[1] && y < tl[1] + n;
@@ -221,21 +226,20 @@ export default function App() {
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.fillStyle = '#fbfaf7';
     ctx.fillRect(0, 0, cv.width, cv.height);
-    // faint lines on every fine cell, slightly stronger every 5
-    for (const [style, stride] of [['#f3f1ea', 1], ['#e5e2d8', 5]] as const) {
-      ctx.strokeStyle = style;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (let x = 0; x <= GRID_W; x += stride) {
-        ctx.moveTo(x * CELL + 0.5, 0);
-        ctx.lineTo(x * CELL + 0.5, GRID_H * CELL);
-      }
-      for (let y = 0; y <= GRID_H; y += stride) {
-        ctx.moveTo(0, y * CELL + 0.5);
-        ctx.lineTo(GRID_W * CELL, y * CELL + 0.5);
-      }
-      ctx.stroke();
+    // only supercell boundaries are drawn; the fine grid stays invisible
+    const S = superSizeRef.current;
+    ctx.strokeStyle = '#e0dcd2';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x <= GRID_W; x += S) {
+      ctx.moveTo(x * CELL + 0.5, 0);
+      ctx.lineTo(x * CELL + 0.5, GRID_H * CELL);
     }
+    for (let y = 0; y <= GRID_H; y += S) {
+      ctx.moveTo(0, y * CELL + 0.5);
+      ctx.lineTo(GRID_W * CELL, y * CELL + 0.5);
+    }
+    ctx.stroke();
 
     const edgeMid = (x: number, y: number, s: Side): [number, number] => [
       x * CELL + CELL / 2 + (DX[s] * CELL) / 2,
@@ -379,30 +383,27 @@ export default function App() {
       }
     }
 
-    // copy/paste preview
+    // copy/paste preview — deliberately coarse: only supercells are
+    // highlighted, even though the real region is fine-grid-precise
     const t = toolRef.current;
     const hc = hoverCellRef.current;
     if (t.kind === 'copy' && hc) {
       const clip = clipboardRef.current;
-      const n = clip ? clip.size : copySizeRef.current;
-      const tl = squareTL(hc, n);
-      if (clip) {
-        for (const m of clip.machines) {
-          const ghost = placeMachine(
-            { id: -1, typeId: m.typeId, origin: [tl[0] + m.rel[0], tl[1] + m.rel[1]], rotation: m.rotation },
-            TYPE_BY_ID[m.typeId],
-          );
-          drawMachine(ghost, 0.5, !machinePlacementOk(ghost));
-        }
-        for (const p of clip.pumps) {
-          drawPumpBase(tl[0] + p.rel[0], tl[1] + p.rel[1], 0.4);
-          drawPumpArrow(tl[0] + p.rel[0], tl[1] + p.rel[1], p.pump.inSide, p.pump.outSide, null, 0, 0.4);
-        }
-      }
+      const n = clip ? clip.size : copyCells();
+      const nSuper = Math.max(1, Math.round(n / S)); // square side, in supercells
+      const sx = Math.floor(hc[0] / S);
+      const sy = Math.floor(hc[1] / S);
+      const tlx = sx - Math.floor(nSuper / 2);
+      const tly = sy - Math.floor(nSuper / 2);
+      ctx.fillStyle = clip ? 'rgba(47, 127, 209, 0.14)' : 'rgba(74, 70, 64, 0.10)';
+      ctx.fillRect(tlx * S * CELL, tly * S * CELL, nSuper * S * CELL, nSuper * S * CELL);
+      // the supercell under the cursor, a shade stronger
+      ctx.fillStyle = clip ? 'rgba(47, 127, 209, 0.22)' : 'rgba(74, 70, 64, 0.18)';
+      ctx.fillRect(sx * S * CELL, sy * S * CELL, S * CELL, S * CELL);
       ctx.strokeStyle = clip ? '#2f7fd1' : '#4a4640';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 4]);
-      ctx.strokeRect(tl[0] * CELL + 0.5, tl[1] * CELL + 0.5, n * CELL, n * CELL);
+      ctx.strokeRect(tlx * S * CELL + 0.5, tly * S * CELL + 0.5, nSuper * S * CELL, nSuper * S * CELL);
       ctx.setLineDash([]);
     }
 
@@ -436,7 +437,7 @@ export default function App() {
   useEffect(() => {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hideLabels, clipboard, tool, copySize]);
+  }, [hideLabels, clipboard, tool, copySuper, superSize]);
 
   // ---- mouse handlers ----------------------------------------------------
 
@@ -454,7 +455,7 @@ export default function App() {
     } else {
       const clip = clipboardRef.current;
       if (clip) pasteClipboard(squareTL(cell, clip.size), clip);
-      else setClipboard(captureRegion(squareTL(cell, copySizeRef.current)));
+      else setClipboard(captureRegion(squareTL(cell, copyCells())));
     }
     draw();
   };
@@ -569,7 +570,7 @@ export default function App() {
             </ul>
           ) : (
             <ul className="help">
-              <li>Click to copy the outlined {copySize}×{copySize} square.</li>
+              <li>Click to copy the outlined {copySuper}×{copySuper}-supercell square.</li>
               <li>Any machine overlapping the square — even partially — is copied whole.</li>
               <li>Use the slider to change the square size.</li>
             </ul>
@@ -601,19 +602,30 @@ export default function App() {
           Copy/paste
         </button>
         <label className="slider">
-          {copySize}×{copySize}
+          {copySuper}×{copySuper}
           <input
             type="range"
-            min={4}
-            max={40}
-            value={copySize}
-            onChange={(e) => setCopySize(Number(e.target.value))}
+            min={1}
+            max={7}
+            step={2}
+            value={copySuper}
+            onChange={(e) => setCopySuper(Number(e.target.value))}
           />
         </label>
         <button className={tool.kind === 'erase' ? 'active' : ''} onClick={() => setTool({ kind: 'erase' })}>
           Erase
         </button>
         <span className="spacer" />
+        <label className="slider">
+          Grid: {superSize}
+          <input
+            type="range"
+            min={2}
+            max={20}
+            value={superSize}
+            onChange={(e) => setSuperSize(Number(e.target.value))}
+          />
+        </label>
         <label className="checkbox">
           <input type="checkbox" checked={hideLabels} onChange={(e) => setHideLabels(e.target.checked)} />
           Hide labels
