@@ -23,12 +23,19 @@ export function totalRate(fm: FluidMap | undefined): number {
   return Object.values(fm).reduce((a, b) => a + b, 0);
 }
 
-function mixColors(a: string, b: string): string {
+// Blend a FluidMap's colors into one, weighted by their rates.
+function weightedMix(fm: FluidMap): string {
   const parse = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
-  const [ar, ag, ab] = parse(a);
-  const [br, bg, bb] = parse(b);
+  const total = totalRate(fm);
+  const rgb = [0, 0, 0];
+  for (const [color, rate] of Object.entries(fm)) {
+    const [r, g, b] = parse(color);
+    rgb[0] += (r * rate) / total;
+    rgb[1] += (g * rate) / total;
+    rgb[2] += (b * rate) / total;
+  }
   const hex = (n: number) => Math.round(n).toString(16).padStart(2, '0');
-  return `#${hex((ar + br) / 2)}${hex((ag + bg) / 2)}${hex((ab + bb) / 2)}`;
+  return `#${hex(rgb[0])}${hex(rgb[1])}${hex(rgb[2])}`;
 }
 
 // Machine shapes are authored on a coarse grid and expanded onto the real
@@ -106,41 +113,22 @@ export const MACHINE_TYPES: MachineType[] = [
     },
   },
   {
-    id: 'amplifier',
-    name: 'Amplifier',
+    id: 'funnel',
+    name: 'Funnel',
     bodyColor: '#f4e3bc',
     cells: scaleCells([[0, 0], [1, 0], [2, 0]]),
     ports: [
       { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3]]) },
       { id: 'out', label: 'B', kind: 'out', edges: scaleEdges([[[2, 0], 1]]) },
     ],
-    ruleText: 'Port B outputs the dominant fluid arriving at port A at 1.5× its rate, capped at 10 L/s.',
-    compute: (inputs): Record<string, FluidMap> => {
-      const f = dominant(inputs.in ?? {});
-      if (!f) return {};
-      return { out: { [f.color]: Math.min(10, f.rate * 1.5) } };
-    },
-  },
-  {
-    id: 'mixer',
-    name: 'Mixer',
-    bodyColor: '#c7dded',
-    // T-shape:  X X X
-    //           . X .
-    cells: scaleCells([[0, 0], [1, 0], [2, 0], [1, 1]]),
-    ports: [
-      { id: 'l', label: 'L', kind: 'in', edges: scaleEdges([[[0, 0], 3]]) },
-      { id: 'r', label: 'R', kind: 'in', edges: scaleEdges([[[2, 0], 1]]) },
-      { id: 'out', label: 'O', kind: 'out', edges: scaleEdges([[[1, 1], 2]]) },
-    ],
     ruleText:
-      'If both L and R receive fluid, port O produces min(L rate, R rate) L/s of the ' +
-      'blend of the two dominant input colors.',
+      'Port B outputs everything arriving at port A: same total rate, blended into ' +
+      'a single color weighted by rate.',
     compute: (inputs): Record<string, FluidMap> => {
-      const l = dominant(inputs.l ?? {});
-      const r = dominant(inputs.r ?? {});
-      if (!l || !r) return {};
-      return { out: { [mixColors(l.color, r.color)]: Math.min(l.rate, r.rate) } };
+      const fm = inputs.in ?? {};
+      const total = totalRate(fm);
+      if (total <= 1e-4) return {};
+      return { out: { [weightedMix(fm)]: total } };
     },
   },
 ];
