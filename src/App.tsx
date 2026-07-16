@@ -9,9 +9,9 @@ import type { SimState } from './sim';
 import type { Cell, FluidMap, Machine, Side, World } from './types';
 import './App.css';
 
-const GRID_W = 34;
-const GRID_H = 22;
-const CELL = 30;
+const GRID_W = 170;
+const GRID_H = 110;
+const CELL = 6;
 const TICK_MS = 110;
 
 type Tool = { kind: 'pump' } | { kind: 'erase' } | { kind: 'machine'; typeId: string };
@@ -69,6 +69,7 @@ export default function App() {
 
   const [tool, setTool] = useState<Tool>({ kind: 'pump' });
   const [rotation, setRotation] = useState(0);
+  const [hideLabels, setHideLabels] = useState(false);
   const [hover, setHover] = useState<Hover>(null);
   const [, setTick] = useState(0); // re-render so the info panel shows live flows
 
@@ -76,8 +77,10 @@ export default function App() {
   toolRef.current = tool;
   const rotationRef = useRef(rotation);
   rotationRef.current = rotation;
+  const hideLabelsRef = useRef(hideLabels);
+  hideLabelsRef.current = hideLabels;
   const hoverCellRef = useRef<Cell | null>(null);
-  const dragRef = useRef<{ mode: 'pump'; path: Cell[] } | { mode: 'erase' } | null>(null);
+  const dragRef = useRef<{ mode: 'pump'; path: Cell[] } | { mode: 'erase'; last: Cell } | null>(null);
 
   const eventCell = (e: { clientX: number; clientY: number }): Cell | null => {
     const cv = canvasRef.current;
@@ -168,18 +171,21 @@ export default function App() {
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.fillStyle = '#fbfaf7';
     ctx.fillRect(0, 0, cv.width, cv.height);
-    ctx.strokeStyle = '#e7e4dc';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = 0; x <= GRID_W; x++) {
-      ctx.moveTo(x * CELL + 0.5, 0);
-      ctx.lineTo(x * CELL + 0.5, GRID_H * CELL);
+    // faint lines on every fine cell, slightly stronger every 5
+    for (const [style, stride] of [['#f3f1ea', 1], ['#e5e2d8', 5]] as const) {
+      ctx.strokeStyle = style;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 0; x <= GRID_W; x += stride) {
+        ctx.moveTo(x * CELL + 0.5, 0);
+        ctx.lineTo(x * CELL + 0.5, GRID_H * CELL);
+      }
+      for (let y = 0; y <= GRID_H; y += stride) {
+        ctx.moveTo(0, y * CELL + 0.5);
+        ctx.lineTo(GRID_W * CELL, y * CELL + 0.5);
+      }
+      ctx.stroke();
     }
-    for (let y = 0; y <= GRID_H; y++) {
-      ctx.moveTo(0, y * CELL + 0.5);
-      ctx.lineTo(GRID_W * CELL, y * CELL + 0.5);
-    }
-    ctx.stroke();
 
     const edgeMid = (x: number, y: number, s: Side): [number, number] => [
       x * CELL + CELL / 2 + (DX[s] * CELL) / 2,
@@ -188,15 +194,15 @@ export default function App() {
 
     const drawPump = (x: number, y: number, inSide: Side, outSide: Side, fluidColor: string | null, rate: number, alpha = 1) => {
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = '#edeef0';
-      ctx.fillRect(x * CELL + 1, y * CELL + 1, CELL - 2, CELL - 2);
+      ctx.fillStyle = '#e7e9ec';
+      ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
       const color = fluidColor ?? '#b3b8c0';
       const [ix, iy] = edgeMid(x, y, inSide);
       const [ox, oy] = edgeMid(x, y, outSide);
       const cx = x * CELL + CELL / 2;
       const cy = y * CELL + CELL / 2;
       ctx.strokeStyle = color;
-      ctx.lineWidth = fluidColor ? Math.min(9, 3 + 2.2 * Math.log2(1 + rate)) : 3;
+      ctx.lineWidth = fluidColor ? Math.min(4, 1.5 + 0.7 * Math.log2(1 + rate)) : 1.5;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.beginPath();
@@ -210,8 +216,8 @@ export default function App() {
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.moveTo(ox, oy);
-      ctx.lineTo(ox - adx * 8 - ady * 5, oy - ady * 8 + adx * 5);
-      ctx.lineTo(ox - adx * 8 + ady * 5, oy - ady * 8 - adx * 5);
+      ctx.lineTo(ox - adx * 3 - ady * 2, oy - ady * 3 + adx * 2);
+      ctx.lineTo(ox - adx * 3 + ady * 2, oy - ady * 3 - adx * 2);
       ctx.closePath();
       ctx.fill();
       ctx.globalAlpha = 1;
@@ -224,9 +230,10 @@ export default function App() {
     }
 
     const drawMachine = (pm: PlacedMachine, alpha = 1, invalid = false) => {
+      const hidden = hideLabelsRef.current;
       ctx.globalAlpha = alpha;
       const cellSet = new Set(pm.cells.map(([x, y]) => cellKey(x, y)));
-      ctx.fillStyle = invalid ? '#e8a0a0' : pm.type.bodyColor;
+      ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#dcd8cf' : pm.type.bodyColor;
       for (const [x, y] of pm.cells) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
       // outline the perimeter
       ctx.strokeStyle = '#4a4640';
@@ -245,20 +252,24 @@ export default function App() {
       }
       ctx.stroke();
 
-      // ports: thick strokes just inside the edge, labeled
+      // ports: thick strokes along the boundary. When labels are hidden they
+      // become an anonymous thicker border; otherwise colored by kind.
       const io = sim.machineIO.get(pm.machine.id);
       for (const port of pm.ports) {
-        ctx.strokeStyle = port.def.kind === 'in' ? '#2f7fd1' : '#e08a1e';
-        ctx.lineWidth = 5;
+        ctx.strokeStyle = hidden ? '#4a4640' : port.def.kind === 'in' ? '#2f7fd1' : '#e08a1e';
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'butt';
+        const inset = 2;
+        ctx.beginPath();
         for (const [[x, y], s] of port.edges) {
-          const inset = 3;
-          ctx.beginPath();
-          if (s === 0) { ctx.moveTo(x * CELL + 3, y * CELL + inset); ctx.lineTo(x * CELL + CELL - 3, y * CELL + inset); }
-          if (s === 2) { ctx.moveTo(x * CELL + 3, y * CELL + CELL - inset); ctx.lineTo(x * CELL + CELL - 3, y * CELL + CELL - inset); }
-          if (s === 3) { ctx.moveTo(x * CELL + inset, y * CELL + 3); ctx.lineTo(x * CELL + inset, y * CELL + CELL - 3); }
-          if (s === 1) { ctx.moveTo(x * CELL + CELL - inset, y * CELL + 3); ctx.lineTo(x * CELL + CELL - inset, y * CELL + CELL - 3); }
-          ctx.stroke();
+          if (s === 0) { ctx.moveTo(x * CELL, y * CELL + inset); ctx.lineTo(x * CELL + CELL, y * CELL + inset); }
+          if (s === 2) { ctx.moveTo(x * CELL, y * CELL + CELL - inset); ctx.lineTo(x * CELL + CELL, y * CELL + CELL - inset); }
+          if (s === 3) { ctx.moveTo(x * CELL + inset, y * CELL); ctx.lineTo(x * CELL + inset, y * CELL + CELL); }
+          if (s === 1) { ctx.moveTo(x * CELL + CELL - inset, y * CELL); ctx.lineTo(x * CELL + CELL - inset, y * CELL + CELL); }
         }
+        ctx.stroke();
+        if (hidden) continue;
+
         // label near the middle edge of the port
         const [[lx, ly], ls] = port.edges[Math.floor((port.edges.length - 1) / 2)];
         const [ex, ey] = edgeMid(lx, ly, ls);
@@ -280,17 +291,20 @@ export default function App() {
         }
       }
 
-      // machine name at footprint center
-      const cxs = pm.cells.map(([x]) => x * CELL + CELL / 2);
-      const cys = pm.cells.map(([, y]) => y * CELL + CELL / 2);
-      ctx.fillStyle = '#2b2823';
-      ctx.font = '10px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(
-        pm.type.name,
-        cxs.reduce((a, b) => a + b, 0) / cxs.length,
-        cys.reduce((a, b) => a + b, 0) / cys.length,
-      );
+      if (!hidden) {
+        // machine name at footprint center
+        const cxs = pm.cells.map(([x]) => x * CELL + CELL / 2);
+        const cys = pm.cells.map(([, y]) => y * CELL + CELL / 2);
+        ctx.fillStyle = '#2b2823';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(
+          pm.type.name,
+          cxs.reduce((a, b) => a + b, 0) / cxs.length,
+          cys.reduce((a, b) => a + b, 0) / cys.length,
+        );
+      }
       ctx.globalAlpha = 1;
     };
 
@@ -342,6 +356,11 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    draw();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hideLabels]);
+
   // ---- mouse handlers ----------------------------------------------------
 
   const onMouseDown = (e: React.MouseEvent) => {
@@ -353,7 +372,7 @@ export default function App() {
     if (t.kind === 'pump') {
       if (!occupied.has(cellKey(cell[0], cell[1]))) dragRef.current = { mode: 'pump', path: [cell] };
     } else if (t.kind === 'erase') {
-      dragRef.current = { mode: 'erase' };
+      dragRef.current = { mode: 'erase', last: cell };
       eraseAt(cell);
     } else {
       const machine: Machine = { id: world.nextMachineId, typeId: t.typeId, origin: cell, rotation: rotationRef.current };
@@ -376,7 +395,14 @@ export default function App() {
         x < 0 || y < 0 || x >= GRID_W || y >= GRID_H || occupied.has(cellKey(x, y)),
       );
     } else if (cell && drag?.mode === 'erase') {
-      eraseAt(cell);
+      // interpolate so fast drags don't skip fine-grid cells
+      let [lx, ly] = drag.last;
+      while (lx !== cell[0] || ly !== cell[1]) {
+        if (lx !== cell[0]) lx += Math.sign(cell[0] - lx);
+        else ly += Math.sign(cell[1] - ly);
+        eraseAt([lx, ly]);
+      }
+      drag.last = cell;
     }
     draw();
   };
@@ -396,6 +422,14 @@ export default function App() {
     if (hover?.kind === 'machine') {
       const machine = world.machines.find((m) => m.id === hover.machineId);
       if (!machine) return null;
+      if (hideLabels) {
+        return (
+          <>
+            <h2>Machine</h2>
+            <p className="rule dim">Labels are hidden, so this machine keeps its secrets.</p>
+          </>
+        );
+      }
       const pm = placeMachine(machine, TYPE_BY_ID[machine.typeId]);
       const io = sim.machineIO.get(machine.id);
       return (
@@ -467,6 +501,10 @@ export default function App() {
           Erase
         </button>
         <span className="spacer" />
+        <label className="checkbox">
+          <input type="checkbox" checked={hideLabels} onChange={(e) => setHideLabels(e.target.checked)} />
+          Hide labels
+        </label>
         <button onClick={() => setRotation((r) => (r + 1) % 4)}>Rotate (R): {rotation * 90}°</button>
         <button
           onClick={() => {

@@ -1,4 +1,4 @@
-import type { Flow, FluidMap, MachineType } from './types';
+import type { Cell, Edge, Flow, FluidMap, MachineType } from './types';
 
 export const RED = '#d63c3c';
 export const GREEN = '#3aa845';
@@ -31,13 +31,43 @@ function mixColors(a: string, b: string): string {
   return `#${hex((ar + br) / 2)}${hex((ag + bg) / 2)}${hex((ab + bb) / 2)}`;
 }
 
+// Machine shapes are authored on a coarse grid and expanded onto the real
+// (5x finer) grid, so each authored cell becomes a SCALE x SCALE block and
+// each authored port edge becomes SCALE consecutive edges.
+const SCALE = 5;
+
+function scaleCells(cells: Cell[]): Cell[] {
+  return cells.flatMap(([x, y]) => {
+    const out: Cell[] = [];
+    for (let i = 0; i < SCALE; i++) {
+      for (let j = 0; j < SCALE; j++) out.push([x * SCALE + i, y * SCALE + j]);
+    }
+    return out;
+  });
+}
+
+function scaleEdges(edges: Edge[]): Edge[] {
+  return edges.flatMap(([[x, y], s]) => {
+    const out: Edge[] = [];
+    for (let i = 0; i < SCALE; i++) {
+      if (s === 0) out.push([[x * SCALE + i, y * SCALE], 0]);
+      else if (s === 2) out.push([[x * SCALE + i, y * SCALE + SCALE - 1], 2]);
+      else if (s === 3) out.push([[x * SCALE, y * SCALE + i], 3]);
+      else out.push([[x * SCALE + SCALE - 1, y * SCALE + i], 1]);
+    }
+    return out;
+  });
+}
+
 export const MACHINE_TYPES: MachineType[] = [
   {
     id: 'red-spring',
     name: 'Red Spring',
     bodyColor: '#f0c9c9',
-    cells: [[0, 0], [1, 0], [0, 1], [1, 1]],
-    ports: [{ id: 'out', label: 'A', kind: 'out', edges: [[[0, 0], 0], [[1, 0], 0]] }],
+    cells: scaleCells([[0, 0], [1, 0], [0, 1], [1, 1]]),
+    ports: [
+      { id: 'out', label: 'A', kind: 'out', edges: scaleEdges([[[0, 0], 0], [[1, 0], 0]]) },
+    ],
     ruleText: 'Always produces 2 L/s of red fluid at port A. Needs no inputs.',
     compute: () => ({ out: { [RED]: 2 } }),
   },
@@ -45,8 +75,10 @@ export const MACHINE_TYPES: MachineType[] = [
     id: 'green-spring',
     name: 'Green Spring',
     bodyColor: '#c9e5cb',
-    cells: [[0, 0], [1, 0], [0, 1], [1, 1]],
-    ports: [{ id: 'out', label: 'A', kind: 'out', edges: [[[0, 0], 0], [[1, 0], 0]] }],
+    cells: scaleCells([[0, 0], [1, 0], [0, 1], [1, 1]]),
+    ports: [
+      { id: 'out', label: 'A', kind: 'out', edges: scaleEdges([[[0, 0], 0], [[1, 0], 0]]) },
+    ],
     ruleText: 'Always produces 2 L/s of green fluid at port A. Needs no inputs.',
     compute: () => ({ out: { [GREEN]: 2 } }),
   },
@@ -56,11 +88,12 @@ export const MACHINE_TYPES: MachineType[] = [
     bodyColor: '#d8cfe8',
     // L-shape:  X .
     //           X X
-    cells: [[0, 0], [0, 1], [1, 1]],
+    // Ports are deliberately tiny: a single fine-grid cell each.
+    cells: scaleCells([[0, 0], [0, 1], [1, 1]]),
     ports: [
-      { id: 'a', label: 'A', kind: 'in', edges: [[[0, 0], 3], [[0, 1], 3]] },
-      { id: 'b', label: 'B', kind: 'in', edges: [[[1, 1], 1]] },
-      { id: 'out', label: 'C', kind: 'out', edges: [[[0, 0], 0]] },
+      { id: 'a', label: 'A', kind: 'in', edges: [[[0, 4], 3]] },
+      { id: 'b', label: 'B', kind: 'in', edges: [[[9, 7], 1]] },
+      { id: 'out', label: 'C', kind: 'out', edges: [[[2, 0], 0]] },
     ],
     ruleText:
       'If port A receives at least 1 L/s of red fluid and port B receives any green fluid, ' +
@@ -76,10 +109,10 @@ export const MACHINE_TYPES: MachineType[] = [
     id: 'amplifier',
     name: 'Amplifier',
     bodyColor: '#f4e3bc',
-    cells: [[0, 0], [1, 0], [2, 0]],
+    cells: scaleCells([[0, 0], [1, 0], [2, 0]]),
     ports: [
-      { id: 'in', label: 'A', kind: 'in', edges: [[[0, 0], 3]] },
-      { id: 'out', label: 'B', kind: 'out', edges: [[[2, 0], 1]] },
+      { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3]]) },
+      { id: 'out', label: 'B', kind: 'out', edges: scaleEdges([[[2, 0], 1]]) },
     ],
     ruleText: 'Port B outputs the dominant fluid arriving at port A at 1.5× its rate, capped at 10 L/s.',
     compute: (inputs): Record<string, FluidMap> => {
@@ -94,11 +127,11 @@ export const MACHINE_TYPES: MachineType[] = [
     bodyColor: '#c7dded',
     // T-shape:  X X X
     //           . X .
-    cells: [[0, 0], [1, 0], [2, 0], [1, 1]],
+    cells: scaleCells([[0, 0], [1, 0], [2, 0], [1, 1]]),
     ports: [
-      { id: 'l', label: 'L', kind: 'in', edges: [[[0, 0], 3]] },
-      { id: 'r', label: 'R', kind: 'in', edges: [[[2, 0], 1]] },
-      { id: 'out', label: 'O', kind: 'out', edges: [[[1, 1], 2]] },
+      { id: 'l', label: 'L', kind: 'in', edges: scaleEdges([[[0, 0], 3]]) },
+      { id: 'r', label: 'R', kind: 'in', edges: scaleEdges([[[2, 0], 1]]) },
+      { id: 'out', label: 'O', kind: 'out', edges: scaleEdges([[[1, 1], 2]]) },
     ],
     ruleText:
       'If both L and R receive fluid, port O produces min(L rate, R rate) L/s of the ' +
