@@ -46,7 +46,9 @@ export interface Pump {
 export interface World {
   w: number;
   h: number;
-  pumps: Map<string, Pump>; // key "x,y"
+  // key "x,y" -> pumps in that cell: at most one horizontal and one vertical
+  // straight pump may coexist; a bent pump occupies the whole cell.
+  pumps: Map<string, Pump[]>;
   machines: Machine[];
   nextMachineId: number;
 }

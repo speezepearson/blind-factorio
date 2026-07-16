@@ -1,13 +1,16 @@
 import { DX, DY, cellKey, opposite, parseKey, placeMachine } from './geom';
 import type { PlacedMachine } from './geom';
 import { TYPE_BY_ID, dominant } from './machines';
-import type { Flow, FluidMap, World } from './types';
+import type { Flow, FluidMap, Pump, Side, World } from './types';
 
 const EPS = 1e-4;
 const RATE_CAP = 1000;
 
+// Identifies one pump within a cell (cells can hold two crossing pumps).
+export const pumpKey = (x: number, y: number, p: Pump) => `${x},${y}#${p.inSide}${p.outSide}`;
+
 export interface SimState {
-  pumpFluids: Map<string, Flow | null>;
+  pumpFluids: Map<string, Flow | null>; // keyed by pumpKey
   machineIO: Map<number, { inputs: Record<string, FluidMap>; outputs: Record<string, FluidMap> }>;
 }
 
@@ -25,7 +28,11 @@ function addFluid(into: FluidMap, color: string, rate: number) {
 // to pumps drawing from them; pump-to-pump flow advances one cell per tick.
 export function step(world: World, prev: SimState): SimState {
   const placed = placeAll(world);
-  const pumpAt = (x: number, y: number) => world.pumps.get(cellKey(x, y));
+  const pumpsAt = (x: number, y: number): Pump[] => world.pumps.get(cellKey(x, y)) ?? [];
+  // The pump in a cell currently pushing out of the given side, if any.
+  // (Two pumps in one cell never share a side, so this is unique.)
+  const outToward = (x: number, y: number, side: Side): Pump | undefined =>
+    pumpsAt(x, y).find((p) => p.outSide === side);
 
   const machineIO: SimState['machineIO'] = new Map();
   // Machine-boundary edges that currently emit fluid, keyed "x,y,side",
@@ -39,9 +46,9 @@ export function step(world: World, prev: SimState): SimState {
       for (const [[x, y], side] of port.edges) {
         const nx = x + DX[side];
         const ny = y + DY[side];
-        const p = pumpAt(nx, ny);
-        if (p && p.outSide === opposite(side)) {
-          const f = prev.pumpFluids.get(cellKey(nx, ny));
+        const p = outToward(nx, ny, opposite(side));
+        if (p) {
+          const f = prev.pumpFluids.get(pumpKey(nx, ny, p));
           if (f) addFluid(fm, f.color, f.rate);
         }
       }
@@ -69,33 +76,34 @@ export function step(world: World, prev: SimState): SimState {
       for (const [[x, y], side] of port.edges) {
         const nx = x + DX[side];
         const ny = y + DY[side];
-        const p = pumpAt(nx, ny);
-        if (p && p.inSide === opposite(side)) info.consumers++;
+        if (pumpsAt(nx, ny).some((p) => p.inSide === opposite(side))) info.consumers++;
         emitting.set(`${x},${y},${side}`, info);
       }
     }
   }
 
   const pumpFluids: SimState['pumpFluids'] = new Map();
-  for (const [k, pump] of world.pumps) {
+  for (const [k, list] of world.pumps) {
     const [x, y] = parseKey(k);
-    const s = pump.inSide;
-    const nx = x + DX[s];
-    const ny = y + DY[s];
-    const fm: FluidMap = {};
+    for (const pump of list) {
+      const s = pump.inSide;
+      const nx = x + DX[s];
+      const ny = y + DY[s];
+      const fm: FluidMap = {};
 
-    const np = pumpAt(nx, ny);
-    if (np && np.outSide === opposite(s)) {
-      const f = prev.pumpFluids.get(cellKey(nx, ny));
-      if (f) addFluid(fm, f.color, f.rate);
-    }
-    const src = emitting.get(`${nx},${ny},${opposite(s)}`);
-    if (src) {
-      const share = Math.max(1, src.consumers);
-      for (const [color, rate] of Object.entries(src.fluids)) addFluid(fm, color, rate / share);
-    }
+      const np = outToward(nx, ny, opposite(s));
+      if (np) {
+        const f = prev.pumpFluids.get(pumpKey(nx, ny, np));
+        if (f) addFluid(fm, f.color, f.rate);
+      }
+      const src = emitting.get(`${nx},${ny},${opposite(s)}`);
+      if (src) {
+        const share = Math.max(1, src.consumers);
+        for (const [color, rate] of Object.entries(src.fluids)) addFluid(fm, color, rate / share);
+      }
 
-    pumpFluids.set(k, dominant(fm));
+      pumpFluids.set(pumpKey(x, y, pump), dominant(fm));
+    }
   }
 
   return { pumpFluids, machineIO };

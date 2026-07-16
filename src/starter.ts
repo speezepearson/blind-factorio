@@ -1,0 +1,47 @@
+import { cellKey, mergePumps, orientPath } from './geom';
+import type { Cell, World } from './types';
+
+// Walk axis-aligned segments between waypoints, returning every cell passed.
+function pathThrough(waypoints: Cell[]): Cell[] {
+  const path: Cell[] = [waypoints[0]];
+  for (const wp of waypoints.slice(1)) {
+    let [x, y] = path[path.length - 1];
+    while (x !== wp[0] || y !== wp[1]) {
+      if (x !== wp[0]) x += Math.sign(wp[0] - x);
+      else y += Math.sign(wp[1] - y);
+      path.push([x, y]);
+    }
+  }
+  return path;
+}
+
+// A small working factory: red + green springs feed the reactor, whose black
+// output is amplified and then blended with more green in the mixer.
+export function buildStarterWorld(w: number, h: number): World {
+  const world: World = { w, h, pumps: new Map(), machines: [], nextMachineId: 1 };
+  const add = (typeId: string, origin: Cell, rotation = 0) => {
+    world.machines.push({ id: world.nextMachineId++, typeId, origin, rotation });
+  };
+  const pipe = (...waypoints: Cell[]) => {
+    for (const { cell, inSide, outSide } of orientPath(pathThrough(waypoints))) {
+      const k = cellKey(cell[0], cell[1]);
+      world.pumps.set(k, mergePumps(world.pumps.get(k), { inSide, outSide }));
+    }
+  };
+
+  add('red-spring', [20, 30]);
+  add('green-spring', [55, 30]);
+  add('reactor', [38, 58]);
+  add('amplifier', [70, 40]);
+  add('mixer', [100, 60]);
+
+  pipe([25, 29], [25, 26], [33, 26], [33, 62], [37, 62]); // red spring -> reactor A
+  pipe([58, 29], [58, 26], [52, 26], [52, 65], [48, 65]); // green spring -> reactor B
+  // reactor C -> amplifier (crosses the green feed at (52,50))
+  pipe([40, 57], [40, 50], [68, 50], [68, 42], [69, 42]);
+  pipe([85, 42], [90, 42], [90, 62], [99, 62]); // amplifier -> mixer L
+  pipe([61, 29], [61, 22], [120, 22], [120, 62], [115, 62]); // green spring -> mixer R
+  pipe([107, 70], [107, 78]); // mixer output, spilling into the void
+
+  return world;
+}

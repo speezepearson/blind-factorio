@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  DX, DY, SIDE_NAMES, cellKey, dirFromTo, opposite, parseKey, placeMachine,
+  DX, DY, SIDE_NAMES, cellKey, mergePumps, orientPath, parseKey, placeMachine,
 } from './geom';
 import type { PlacedMachine } from './geom';
-import { FLUID_NAMES, MACHINE_TYPES, TYPE_BY_ID, totalRate } from './machines';
-import { emptySim, placeAll, step } from './sim';
+import { FLUID_NAMES, TYPE_BY_ID, totalRate } from './machines';
+import { emptySim, placeAll, pumpKey, step } from './sim';
 import type { SimState } from './sim';
-import type { Cell, FluidMap, Machine, Side, World } from './types';
+import { buildStarterWorld } from './starter';
+import type { Cell, FluidMap, Machine, Pump, Side, World } from './types';
 import './App.css';
 
 const GRID_W = 170;
@@ -14,35 +15,27 @@ const GRID_H = 110;
 const CELL = 6;
 const TICK_MS = 110;
 
-type Tool = { kind: 'pump' } | { kind: 'erase' } | { kind: 'machine'; typeId: string };
+type Tool = { kind: 'pipe' } | { kind: 'copy' } | { kind: 'erase' };
 
 type Hover = { kind: 'machine'; machineId: number } | { kind: 'pump'; key: string } | null;
 
-function makeWorld(): World {
-  return { w: GRID_W, h: GRID_H, pumps: new Map(), machines: [], nextMachineId: 1 };
+interface Clipboard {
+  size: number;
+  machines: Array<{ typeId: string; rotation: number; rel: Cell }>;
+  pumps: Array<{ rel: Cell; pump: Pump }>;
+}
+
+function freshWorld(): { world: World; sim: SimState } {
+  const world = buildStarterWorld(GRID_W, GRID_H);
+  let sim = emptySim();
+  for (let i = 0; i < 400; i++) sim = step(world, sim); // pre-warm so it starts flowing
+  return { world, sim };
 }
 
 function machineCellMap(placed: PlacedMachine[]): Map<string, PlacedMachine> {
   const map = new Map<string, PlacedMachine>();
   for (const pm of placed) for (const [x, y] of pm.cells) map.set(cellKey(x, y), pm);
   return map;
-}
-
-// Given the cells a drag passed through, orient a pump in each cell so fluid
-// flows along the path.
-function orientPath(path: Cell[]): Array<{ cell: Cell; inSide: Side; outSide: Side }> {
-  return path.map((cell, i) => {
-    const prev = path[i - 1];
-    const next = path[i + 1];
-    let inSide: Side = 3;
-    let outSide: Side = 1;
-    if (prev) inSide = dirFromTo(cell, prev);
-    if (next) outSide = dirFromTo(cell, next);
-    if (!prev && next) inSide = opposite(outSide);
-    if (prev && !next) outSide = opposite(inSide);
-    if (inSide === outSide) outSide = opposite(inSide);
-    return { cell, inSide, outSide };
-  });
 }
 
 const fluidName = (color: string) => FLUID_NAMES[color] ?? color;
@@ -64,23 +57,27 @@ function FluidList({ fm }: { fm: FluidMap | undefined }) {
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const worldRef = useRef<World>(makeWorld());
-  const simRef = useRef<SimState>(emptySim());
+  const [initial] = useState(freshWorld);
+  const worldRef = useRef<World>(initial.world);
+  const simRef = useRef<SimState>(initial.sim);
 
-  const [tool, setTool] = useState<Tool>({ kind: 'pump' });
-  const [rotation, setRotation] = useState(0);
+  const [tool, setTool] = useState<Tool>({ kind: 'pipe' });
+  const [copySize, setCopySize] = useState(10);
+  const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   const [hideLabels, setHideLabels] = useState(false);
   const [hover, setHover] = useState<Hover>(null);
   const [, setTick] = useState(0); // re-render so the info panel shows live flows
 
   const toolRef = useRef(tool);
   toolRef.current = tool;
-  const rotationRef = useRef(rotation);
-  rotationRef.current = rotation;
+  const copySizeRef = useRef(copySize);
+  copySizeRef.current = copySize;
+  const clipboardRef = useRef(clipboard);
+  clipboardRef.current = clipboard;
   const hideLabelsRef = useRef(hideLabels);
   hideLabelsRef.current = hideLabels;
   const hoverCellRef = useRef<Cell | null>(null);
-  const dragRef = useRef<{ mode: 'pump'; path: Cell[] } | { mode: 'erase'; last: Cell } | null>(null);
+  const dragRef = useRef<{ mode: 'pipe'; path: Cell[] } | { mode: 'erase'; last: Cell } | null>(null);
 
   const eventCell = (e: { clientX: number; clientY: number }): Cell | null => {
     const cv = canvasRef.current;
@@ -131,12 +128,12 @@ export default function App() {
     if (pm) world.machines = world.machines.filter((m) => m.id !== pm.machine.id);
   };
 
-  const commitPumpPath = (path: Cell[]) => {
+  const commitPipePath = (path: Cell[]) => {
     const world = worldRef.current;
     const occupied = machineCellMap(placeAll(world));
     for (const { cell, inSide, outSide } of orientPath(path)) {
       const k = cellKey(cell[0], cell[1]);
-      if (!occupied.has(k)) world.pumps.set(k, { inSide, outSide });
+      if (!occupied.has(k)) world.pumps.set(k, mergePumps(world.pumps.get(k), { inSide, outSide }));
     }
   };
 
@@ -156,7 +153,60 @@ export default function App() {
     }
   };
 
-  // ---- drawing ----------------------------------------------------------
+  // ---- copy/paste --------------------------------------------------------
+
+  // top-left of the size-n square centered (roughly) on the cursor
+  const squareTL = (cell: Cell, n: number): Cell => [cell[0] - Math.floor(n / 2), cell[1] - Math.floor(n / 2)];
+
+  const captureRegion = (tl: Cell): Clipboard => {
+    const n = copySizeRef.current;
+    const world = worldRef.current;
+    const inSquare = ([x, y]: Cell) =>
+      x >= tl[0] && x < tl[0] + n && y >= tl[1] && y < tl[1] + n;
+    const machines = placeAll(world)
+      .filter((pm) => pm.cells.some(inSquare))
+      .map((pm) => ({
+        typeId: pm.machine.typeId,
+        rotation: pm.machine.rotation,
+        rel: [pm.machine.origin[0] - tl[0], pm.machine.origin[1] - tl[1]] as Cell,
+      }));
+    const pumps: Clipboard['pumps'] = [];
+    for (const [k, list] of world.pumps) {
+      const [x, y] = parseKey(k);
+      if (inSquare([x, y])) {
+        for (const pump of list) pumps.push({ rel: [x - tl[0], y - tl[1]], pump: { ...pump } });
+      }
+    }
+    return { size: n, machines, pumps };
+  };
+
+  // Stamp the clipboard down: machines that would collide are skipped;
+  // pumps overwrite pumps but never machines.
+  const pasteClipboard = (tl: Cell, clip: Clipboard) => {
+    const world = worldRef.current;
+    for (const m of clip.machines) {
+      const machine: Machine = {
+        id: world.nextMachineId,
+        typeId: m.typeId,
+        origin: [tl[0] + m.rel[0], tl[1] + m.rel[1]],
+        rotation: m.rotation,
+      };
+      if (machinePlacementOk(placeMachine(machine, TYPE_BY_ID[m.typeId]))) {
+        world.machines.push(machine);
+        world.nextMachineId++;
+      }
+    }
+    const occupied = machineCellMap(placeAll(world));
+    for (const p of clip.pumps) {
+      const x = tl[0] + p.rel[0];
+      const y = tl[1] + p.rel[1];
+      if (x < 0 || y < 0 || x >= world.w || y >= world.h) continue;
+      const k = cellKey(x, y);
+      if (!occupied.has(k)) world.pumps.set(k, mergePumps(world.pumps.get(k), { ...p.pump }));
+    }
+  };
+
+  // ---- drawing -----------------------------------------------------------
 
   const draw = () => {
     const cv = canvasRef.current;
@@ -192,10 +242,15 @@ export default function App() {
       y * CELL + CELL / 2 + (DY[s] * CELL) / 2,
     ];
 
-    const drawPump = (x: number, y: number, inSide: Side, outSide: Side, fluidColor: string | null, rate: number, alpha = 1) => {
+    const drawPumpBase = (x: number, y: number, alpha = 1) => {
       ctx.globalAlpha = alpha;
       ctx.fillStyle = '#e7e9ec';
       ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+      ctx.globalAlpha = 1;
+    };
+
+    const drawPumpArrow = (x: number, y: number, inSide: Side, outSide: Side, fluidColor: string | null, rate: number, alpha = 1) => {
+      ctx.globalAlpha = alpha;
       const color = fluidColor ?? '#b3b8c0';
       const [ix, iy] = edgeMid(x, y, inSide);
       const [ox, oy] = edgeMid(x, y, outSide);
@@ -223,10 +278,13 @@ export default function App() {
       ctx.globalAlpha = 1;
     };
 
-    for (const [k, pump] of world.pumps) {
+    for (const [k, list] of world.pumps) {
       const [x, y] = parseKey(k);
-      const f = sim.pumpFluids.get(k) ?? null;
-      drawPump(x, y, pump.inSide, pump.outSide, f?.color ?? null, f?.rate ?? 0);
+      drawPumpBase(x, y);
+      for (const pump of list) {
+        const f = sim.pumpFluids.get(pumpKey(x, y, pump)) ?? null;
+        drawPumpArrow(x, y, pump.inSide, pump.outSide, f?.color ?? null, f?.rate ?? 0);
+      }
     }
 
     const drawMachine = (pm: PlacedMachine, alpha = 1, invalid = false) => {
@@ -310,27 +368,46 @@ export default function App() {
 
     for (const pm of placed) drawMachine(pm);
 
-    // drag preview: pump line
+    // drag preview: pipe line
     const drag = dragRef.current;
-    if (drag?.mode === 'pump') {
+    if (drag?.mode === 'pipe') {
       for (const { cell, inSide, outSide } of orientPath(drag.path)) {
-        if (!occupied.has(cellKey(cell[0], cell[1]))) drawPump(cell[0], cell[1], inSide, outSide, null, 0, 0.55);
+        if (!occupied.has(cellKey(cell[0], cell[1]))) {
+          drawPumpBase(cell[0], cell[1], 0.55);
+          drawPumpArrow(cell[0], cell[1], inSide, outSide, null, 0, 0.55);
+        }
       }
     }
 
-    // machine ghost preview
+    // copy/paste preview
     const t = toolRef.current;
     const hc = hoverCellRef.current;
-    if (t.kind === 'machine' && hc && !drag) {
-      const ghost = placeMachine(
-        { id: -1, typeId: t.typeId, origin: hc, rotation: rotationRef.current },
-        TYPE_BY_ID[t.typeId],
-      );
-      drawMachine(ghost, 0.5, !machinePlacementOk(ghost));
+    if (t.kind === 'copy' && hc) {
+      const clip = clipboardRef.current;
+      const n = clip ? clip.size : copySizeRef.current;
+      const tl = squareTL(hc, n);
+      if (clip) {
+        for (const m of clip.machines) {
+          const ghost = placeMachine(
+            { id: -1, typeId: m.typeId, origin: [tl[0] + m.rel[0], tl[1] + m.rel[1]], rotation: m.rotation },
+            TYPE_BY_ID[m.typeId],
+          );
+          drawMachine(ghost, 0.5, !machinePlacementOk(ghost));
+        }
+        for (const p of clip.pumps) {
+          drawPumpBase(tl[0] + p.rel[0], tl[1] + p.rel[1], 0.4);
+          drawPumpArrow(tl[0] + p.rel[0], tl[1] + p.rel[1], p.pump.inSide, p.pump.outSide, null, 0, 0.4);
+        }
+      }
+      ctx.strokeStyle = clip ? '#2f7fd1' : '#4a4640';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(tl[0] * CELL + 0.5, tl[1] * CELL + 0.5, n * CELL, n * CELL);
+      ctx.setLineDash([]);
     }
 
     // hover highlight
-    if (hc) {
+    if (hc && t.kind !== 'copy') {
       ctx.strokeStyle = 'rgba(60,60,60,0.5)';
       ctx.lineWidth = 1.5;
       ctx.strokeRect(hc[0] * CELL + 1, hc[1] * CELL + 1, CELL - 2, CELL - 2);
@@ -346,7 +423,7 @@ export default function App() {
       draw();
     }, TICK_MS);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'r' || e.key === 'R') setRotation((r) => (r + 1) % 4);
+      if (e.key === 'Escape') setClipboard(null);
     };
     window.addEventListener('keydown', onKey);
     return () => {
@@ -359,28 +436,25 @@ export default function App() {
   useEffect(() => {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hideLabels]);
+  }, [hideLabels, clipboard, tool, copySize]);
 
   // ---- mouse handlers ----------------------------------------------------
 
   const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
     const cell = eventCell(e);
     if (!cell) return;
     const t = toolRef.current;
-    const world = worldRef.current;
-    const occupied = machineCellMap(placeAll(world));
-    if (t.kind === 'pump') {
-      if (!occupied.has(cellKey(cell[0], cell[1]))) dragRef.current = { mode: 'pump', path: [cell] };
+    if (t.kind === 'pipe') {
+      // starting on a machine is fine: pumps appear once the drag leaves it
+      dragRef.current = { mode: 'pipe', path: [cell] };
     } else if (t.kind === 'erase') {
       dragRef.current = { mode: 'erase', last: cell };
       eraseAt(cell);
     } else {
-      const machine: Machine = { id: world.nextMachineId, typeId: t.typeId, origin: cell, rotation: rotationRef.current };
-      const pm = placeMachine(machine, TYPE_BY_ID[t.typeId]);
-      if (machinePlacementOk(pm)) {
-        world.machines.push(machine);
-        world.nextMachineId++;
-      }
+      const clip = clipboardRef.current;
+      if (clip) pasteClipboard(squareTL(cell, clip.size), clip);
+      else setClipboard(captureRegion(squareTL(cell, copySizeRef.current)));
     }
     draw();
   };
@@ -389,11 +463,16 @@ export default function App() {
     const cell = eventCell(e);
     updateHover(cell);
     const drag = dragRef.current;
-    if (cell && drag?.mode === 'pump') {
+    if (cell && drag?.mode === 'pipe') {
       const occupied = machineCellMap(placeAll(worldRef.current));
-      extendPath(drag.path, cell, ([x, y]) =>
-        x < 0 || y < 0 || x >= GRID_W || y >= GRID_H || occupied.has(cellKey(x, y)),
-      );
+      const isMachine = (c: Cell) => occupied.has(cellKey(c[0], c[1]));
+      if (drag.path.length === 1 && isMachine(drag.path[0]) && isMachine(cell)) {
+        drag.path[0] = cell; // slide the anchor while still inside a machine
+      } else {
+        extendPath(drag.path, cell, ([x, y]) =>
+          x < 0 || y < 0 || x >= GRID_W || y >= GRID_H || isMachine([x, y]),
+        );
+      }
     } else if (cell && drag?.mode === 'erase') {
       // interpolate so fast drags don't skip fine-grid cells
       let [lx, ly] = drag.last;
@@ -409,7 +488,7 @@ export default function App() {
 
   const endDrag = () => {
     const drag = dragRef.current;
-    if (drag?.mode === 'pump') commitPumpPath(drag.path);
+    if (drag?.mode === 'pipe') commitPipePath(drag.path);
     dragRef.current = null;
     draw();
   };
@@ -454,16 +533,47 @@ export default function App() {
       );
     }
     if (hover?.kind === 'pump') {
-      const pump = world.pumps.get(hover.key);
-      if (!pump) return null;
-      const f = sim.pumpFluids.get(hover.key);
+      const list = world.pumps.get(hover.key);
+      if (!list || list.length === 0) return null;
+      const [x, y] = parseKey(hover.key);
       return (
         <>
-          <h2>Pump</h2>
-          <p className="rule">
-            Pulls from its {SIDE_NAMES[pump.inSide]} side, pushes out its {SIDE_NAMES[pump.outSide]} side.
-          </p>
-          <p>{f ? <FluidList fm={{ [f.color]: f.rate }} /> : <span className="dim">empty</span>}</p>
+          <h2>{list.length > 1 ? 'Crossing pumps' : 'Pump'}</h2>
+          {list.map((pump) => {
+            const f = sim.pumpFluids.get(pumpKey(x, y, pump));
+            return (
+              <div key={`${pump.inSide}${pump.outSide}`}>
+                <p className="rule">
+                  Pulls from its {SIDE_NAMES[pump.inSide]} side, pushes out its {SIDE_NAMES[pump.outSide]} side.
+                </p>
+                <p>{f ? <FluidList fm={{ [f.color]: f.rate }} /> : <span className="dim">empty</span>}</p>
+              </div>
+            );
+          })}
+        </>
+      );
+    }
+    if (tool.kind === 'copy') {
+      return (
+        <>
+          <h2>Copy / paste</h2>
+          {clipboard ? (
+            <ul className="help">
+              <li>
+                Clipboard holds <b>{clipboard.machines.length}</b> machine{clipboard.machines.length === 1 ? '' : 's'} and{' '}
+                <b>{clipboard.pumps.length}</b> pump{clipboard.pumps.length === 1 ? '' : 's'}.
+              </li>
+              <li>Click to paste (as often as you like).</li>
+              <li>Machines that don't fit are skipped; pumps overwrite pumps but never machines.</li>
+              <li>Press <b>Esc</b> to empty the clipboard and copy something else.</li>
+            </ul>
+          ) : (
+            <ul className="help">
+              <li>Click to copy the outlined {copySize}×{copySize} square.</li>
+              <li>Any machine overlapping the square — even partially — is copied whole.</li>
+              <li>Use the slider to change the square size.</li>
+            </ul>
+          )}
         </>
       );
     }
@@ -471,8 +581,8 @@ export default function App() {
       <>
         <h2>Sandbox</h2>
         <ul className="help">
-          <li><b>Pump tool:</b> click-drag to draw a line of pumps. Fluid flows along the drag direction.</li>
-          <li><b>Machine tools:</b> click to place. Press <b>R</b> to rotate before placing.</li>
+          <li><b>Pipes:</b> click-drag to draw a line of pumps — you can start the drag on a machine. Drag backwards to undo.</li>
+          <li><b>Copy/paste:</b> stamp out squares of factory, machines included.</li>
           <li><b>Erase:</b> click/drag to remove pumps; click a machine to remove it.</li>
           <li>Hover anything to inspect its rule and live flows here.</li>
           <li>Blue edges are input ports, orange edges are output ports.</li>
@@ -484,19 +594,22 @@ export default function App() {
   return (
     <div className="app">
       <div className="toolbar">
-        <button className={tool.kind === 'pump' ? 'active' : ''} onClick={() => setTool({ kind: 'pump' })}>
-          Pump
+        <button className={tool.kind === 'pipe' ? 'active' : ''} onClick={() => setTool({ kind: 'pipe' })}>
+          Pipes
         </button>
-        {MACHINE_TYPES.map((mt) => (
-          <button
-            key={mt.id}
-            className={tool.kind === 'machine' && tool.typeId === mt.id ? 'active' : ''}
-            style={{ borderBottomColor: mt.bodyColor }}
-            onClick={() => setTool({ kind: 'machine', typeId: mt.id })}
-          >
-            {mt.name}
-          </button>
-        ))}
+        <button className={tool.kind === 'copy' ? 'active' : ''} onClick={() => setTool({ kind: 'copy' })}>
+          Copy/paste
+        </button>
+        <label className="slider">
+          {copySize}×{copySize}
+          <input
+            type="range"
+            min={4}
+            max={40}
+            value={copySize}
+            onChange={(e) => setCopySize(Number(e.target.value))}
+          />
+        </label>
         <button className={tool.kind === 'erase' ? 'active' : ''} onClick={() => setTool({ kind: 'erase' })}>
           Erase
         </button>
@@ -505,15 +618,16 @@ export default function App() {
           <input type="checkbox" checked={hideLabels} onChange={(e) => setHideLabels(e.target.checked)} />
           Hide labels
         </label>
-        <button onClick={() => setRotation((r) => (r + 1) % 4)}>Rotate (R): {rotation * 90}°</button>
         <button
           onClick={() => {
-            worldRef.current = makeWorld();
-            simRef.current = emptySim();
+            const fresh = freshWorld();
+            worldRef.current = fresh.world;
+            simRef.current = fresh.sim;
+            setClipboard(null);
             draw();
           }}
         >
-          Clear all
+          Reset world
         </button>
       </div>
       <div className="main">
@@ -524,6 +638,10 @@ export default function App() {
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={endDrag}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setClipboard(null);
+          }}
           onMouseLeave={() => {
             endDrag();
             updateHover(null);

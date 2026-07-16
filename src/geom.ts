@@ -1,4 +1,4 @@
-import type { Cell, Edge, Machine, MachineType, PortDef, Side } from './types';
+import type { Cell, Edge, Machine, MachineType, PortDef, Pump, Side } from './types';
 
 export const DX = [0, 1, 0, -1]; // N E S W
 export const DY = [-1, 0, 1, 0];
@@ -15,6 +15,48 @@ export function dirFromTo(a: Cell, b: Cell): Side {
   if (b[0] > a[0]) return 1;
   if (b[1] > a[1]) return 2;
   return 3;
+}
+
+export interface OrientedPump {
+  cell: Cell;
+  inSide: Side;
+  outSide: Side;
+}
+
+// Given the cells a pipe passes through, orient a pump in each cell so fluid
+// flows along the path. Endpoints point straight through.
+export function orientPath(path: Cell[]): OrientedPump[] {
+  return path.map((cell, i) => {
+    const prev = path[i - 1];
+    const next = path[i + 1];
+    let inSide: Side = 3;
+    let outSide: Side = 1;
+    if (prev) inSide = dirFromTo(cell, prev);
+    if (next) outSide = dirFromTo(cell, next);
+    if (!prev && next) inSide = opposite(outSide);
+    if (prev && !next) outSide = opposite(inSide);
+    if (inSide === outSide) outSide = opposite(inSide);
+    return { cell, inSide, outSide };
+  });
+}
+
+export type PumpAxis = 'h' | 'v' | 'bent';
+
+export function pumpAxis(p: Pump): PumpAxis {
+  const hIn = p.inSide % 2 === 1; // E/W are odd sides
+  const hOut = p.outSide % 2 === 1;
+  if (hIn && hOut) return 'h';
+  if (!hIn && !hOut) return 'v';
+  return 'bent';
+}
+
+// Merge a new pump into a cell's pump list. Straight pumps on perpendicular
+// axes cross without interfering; everything else replaces what's in the way.
+export function mergePumps(existing: Pump[] | undefined, p: Pump): Pump[] {
+  const axis = pumpAxis(p);
+  if (!existing || axis === 'bent') return [p];
+  const keep = existing.filter((q) => pumpAxis(q) !== axis && pumpAxis(q) !== 'bent');
+  return [...keep, p];
 }
 
 export interface PlacedPort {

@@ -29,6 +29,20 @@
   cursor: pointer;
 }
 
+.toolbar .slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #333;
+  padding: 0 4px;
+  min-width: 150px;
+}
+
+.toolbar .slider input {
+  width: 100px;
+}
+
 .toolbar .checkbox {
   display: inline-flex;
   align-items: center;
