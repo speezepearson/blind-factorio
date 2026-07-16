@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  DX, DY, SIDE_NAMES, cellKey, mergePumps, orientPath, parseKey, placeMachine,
+  DX, DY, SIDE_NAMES, cellKey, mergePumps, orientPath, parseKey, placeMachine, rotateSide,
 } from './geom';
 import type { PlacedMachine } from './geom';
 import { FLUID_NAMES, TYPE_BY_ID, totalRate } from './machines';
@@ -23,6 +23,43 @@ interface Clipboard {
   size: number;
   machines: Array<{ typeId: string; rotation: number; rel: Cell; params?: Record<string, number> }>;
   pumps: Array<{ rel: Cell; pump: Pump }>;
+  // visual snapshot of the supercell square highlighted at copy time (which is
+  // not exactly the copied fine-grid region) — shown as the paste ghost
+  snapshot?: HTMLCanvasElement;
+}
+
+function rotateCanvas90(src: HTMLCanvasElement): HTMLCanvasElement {
+  const out = document.createElement('canvas');
+  out.width = src.height;
+  out.height = src.width;
+  const ctx = out.getContext('2d')!;
+  ctx.translate(out.width, 0);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(src, 0, 0);
+  return out;
+}
+
+// Rotate the whole clipboard square a quarter-turn clockwise: cell (x,y) maps
+// to (n-1-y, x), pump sides advance one step, machine rotations advance one
+// step (with their bounding-box origin remapped accordingly).
+function rotateClipboard(clip: Clipboard): Clipboard {
+  const n = clip.size;
+  return {
+    size: n,
+    machines: clip.machines.map((m) => {
+      const pm = placeMachine(
+        { id: -1, typeId: m.typeId, origin: [0, 0], rotation: m.rotation },
+        TYPE_BY_ID[m.typeId],
+      );
+      const h = Math.max(...pm.cells.map((c) => c[1])) + 1;
+      return { ...m, rotation: (m.rotation + 1) % 4, rel: [n - h - m.rel[1], m.rel[0]] as Cell };
+    }),
+    pumps: clip.pumps.map((p) => ({
+      rel: [n - 1 - p.rel[1], p.rel[0]] as Cell,
+      pump: { inSide: rotateSide(p.pump.inSide, 1), outSide: rotateSide(p.pump.outSide, 1) },
+    })),
+    snapshot: clip.snapshot ? rotateCanvas90(clip.snapshot) : undefined,
+  };
 }
 
 function freshWorld(): { world: World; sim: SimState } {
@@ -196,6 +233,28 @@ export default function App() {
       }
     }
     return { size: n, machines, pumps };
+  };
+
+  // Photograph the supercell square highlighted around the given cell, with
+  // the hover overlay suppressed, for use as the paste ghost.
+  const snapshotSupercells = (cell: Cell): HTMLCanvasElement | undefined => {
+    const cv = canvasRef.current;
+    if (!cv) return undefined;
+    const S = superSizeRef.current;
+    const nSuper = Math.max(1, Math.round(copyCells() / S));
+    const tlx = Math.floor(cell[0] / S) - Math.floor(nSuper / 2);
+    const tly = Math.floor(cell[1] / S) - Math.floor(nSuper / 2);
+    const px = nSuper * S * CELL;
+    const prevHover = hoverCellRef.current;
+    hoverCellRef.current = null;
+    draw();
+    const snap = document.createElement('canvas');
+    snap.width = px;
+    snap.height = px;
+    snap.getContext('2d')!.drawImage(cv, tlx * S * CELL, tly * S * CELL, px, px, 0, 0, px, px);
+    hoverCellRef.current = prevHover;
+    draw();
+    return snap;
   };
 
   // Stamp the clipboard down: machines that would collide are skipped;
@@ -420,6 +479,12 @@ export default function App() {
       // the supercell under the cursor, a shade stronger
       ctx.fillStyle = strong;
       ctx.fillRect(sx * S * CELL, sy * S * CELL, S * CELL, S * CELL);
+      if (clip?.snapshot) {
+        // ghost of what the copy-time supercell square looked like
+        ctx.globalAlpha = 0.55;
+        ctx.drawImage(clip.snapshot, tlx * S * CELL, tly * S * CELL, nSuper * S * CELL, nSuper * S * CELL);
+        ctx.globalAlpha = 1;
+      }
       ctx.strokeStyle = line;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 4]);
@@ -468,6 +533,7 @@ export default function App() {
     }, TICK_MS);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setClipboard(null);
+      if (e.key === 'r' || e.key === 'R') setClipboard((c) => (c ? rotateClipboard(c) : c));
     };
     window.addEventListener('keydown', onKey);
     return () => {
@@ -500,8 +566,13 @@ export default function App() {
       setSelectedId(pm ? pm.machine.id : null);
     } else {
       const clip = clipboardRef.current;
-      if (clip) pasteClipboard(squareTL(cell, clip.size), clip);
-      else setClipboard(captureRegion(squareTL(cell, copyCells())));
+      if (clip) {
+        pasteClipboard(squareTL(cell, clip.size), clip);
+      } else {
+        const captured = captureRegion(squareTL(cell, copyCells()));
+        captured.snapshot = snapshotSupercells(cell);
+        setClipboard(captured);
+      }
     }
     draw();
   };
@@ -651,7 +722,7 @@ export default function App() {
                 Clipboard holds <b>{clipboard.machines.length}</b> machine{clipboard.machines.length === 1 ? '' : 's'} and{' '}
                 <b>{clipboard.pumps.length}</b> pump{clipboard.pumps.length === 1 ? '' : 's'}.
               </li>
-              <li>Click to paste (as often as you like).</li>
+              <li>Click to paste (as often as you like). Press <b>R</b> to rotate the clipboard.</li>
               <li>Machines that don't fit are skipped; pumps overwrite pumps but never machines.</li>
               <li>Press <b>Esc</b> to empty the clipboard and copy something else.</li>
             </ul>
