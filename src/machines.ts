@@ -23,19 +23,24 @@ export function totalRate(fm: FluidMap | undefined): number {
   return Object.values(fm).reduce((a, b) => a + b, 0);
 }
 
+const parseHex = (h: string): number[] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+
+function toHexColor(rgb: number[]): string {
+  const c = (n: number) => Math.round(Math.max(0, Math.min(255, n))).toString(16).padStart(2, '0');
+  return `#${c(rgb[0])}${c(rgb[1])}${c(rgb[2])}`;
+}
+
 // Blend a FluidMap's colors into one, weighted by their rates.
 function weightedMix(fm: FluidMap): string {
-  const parse = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
   const total = totalRate(fm);
   const rgb = [0, 0, 0];
   for (const [color, rate] of Object.entries(fm)) {
-    const [r, g, b] = parse(color);
+    const [r, g, b] = parseHex(color);
     rgb[0] += (r * rate) / total;
     rgb[1] += (g * rate) / total;
     rgb[2] += (b * rate) / total;
   }
-  const hex = (n: number) => Math.round(n).toString(16).padStart(2, '0');
-  return `#${hex(rgb[0])}${hex(rgb[1])}${hex(rgb[2])}`;
+  return toHexColor(rgb);
 }
 
 // Machine shapes are authored on a coarse grid and expanded onto the real
@@ -66,12 +71,10 @@ function scaleEdges(edges: Edge[]): Edge[] {
   });
 }
 
-// Pale version of a fluid color, used to tint a spring's body by its output.
+// Pale version of a fluid color, used to tint a machine body by its color param.
 export function paleTint(hex: string): string {
-  const parse = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
-  const toHex = (n: number) => Math.round(n).toString(16).padStart(2, '0');
-  const [r, g, b] = parse(hex);
-  return `#${toHex(r + (255 - r) * 0.72)}${toHex(g + (255 - g) * 0.72)}${toHex(b + (255 - b) * 0.72)}`;
+  const [r, g, b] = parseHex(hex);
+  return toHexColor([r + (255 - r) * 0.72, g + (255 - g) * 0.72, b + (255 - b) * 0.72]);
 }
 
 export const MACHINE_TYPES: MachineType[] = [
@@ -132,6 +135,48 @@ export const MACHINE_TYPES: MachineType[] = [
       const total = totalRate(fm);
       if (total <= 1e-4) return {};
       return { out: { [weightedMix(fm)]: total } };
+    },
+  },
+  {
+    id: 'filter',
+    name: 'Filter',
+    bodyColor: '#e3d3d3',
+    // 3x2 rectangle: input on the west short side, filtrate out the east-top
+    // edge, waste out the east-bottom edge.
+    cells: scaleCells([[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]]),
+    ports: [
+      { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3], [[0, 1], 3]]) },
+      { id: 'near', label: 'B', kind: 'out', edges: scaleEdges([[[2, 0], 1]]) },
+      { id: 'far', label: 'C', kind: 'out', edges: scaleEdges([[[2, 1], 1]]) },
+    ],
+    params: [
+      { key: 'strength', label: 'Strength', kind: 'number', default: 0.5, min: 0, max: 1, step: 0.05 },
+      { key: 'target', label: 'Target color', kind: 'color', default: RED },
+    ],
+    ruleText:
+      'Mixes its input like a funnel, then splits it in half. Port B carries the mixture ' +
+      'pulled strength-of-the-way toward the target color; port C carries the mirror image, ' +
+      'pushed equally far away. Strength self-limits so C stays a real color — total ' +
+      'pigment (rate × color) is conserved.',
+    compute: (inputs, params): Record<string, FluidMap> => {
+      const fm = inputs.in ?? {};
+      const total = totalRate(fm);
+      if (total <= 1e-4) return {};
+      const m = parseHex(weightedMix(fm));
+      const t = parseHex(String(params.target));
+      let s = Math.max(0, Math.min(1, Number(params.strength)));
+      // largest strength for which the mirror color stays inside RGB gamut
+      for (let i = 0; i < 3; i++) {
+        const d = t[i] - m[i];
+        if (d > 0) s = Math.min(s, m[i] / d);
+        else if (d < 0) s = Math.min(s, (255 - m[i]) / -d);
+      }
+      const near = m.map((v, i) => v + s * (t[i] - m[i]));
+      const far = m.map((v, i) => v - s * (t[i] - m[i]));
+      return {
+        near: { [toHexColor(near)]: total / 2 },
+        far: { [toHexColor(far)]: total / 2 },
+      };
     },
   },
 ];

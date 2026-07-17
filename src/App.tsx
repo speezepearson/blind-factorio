@@ -592,9 +592,9 @@ export default function App() {
       if (drag.path.length === 1 && isMachine(drag.path[0]) && isMachine(cell)) {
         drag.path[0] = cell; // slide the anchor while still inside a machine
       } else {
-        extendPath(drag.path, cell, ([x, y]) =>
-          x < 0 || y < 0 || x >= GRID_W || y >= GRID_H || isMachine([x, y]),
-        );
+        // machine cells are allowed in the path (no pumps appear on them, so
+        // the pipe tunnels through and resumes on the far side)
+        extendPath(drag.path, cell, ([x, y]) => x < 0 || y < 0 || x >= GRID_W || y >= GRID_H);
       }
     } else if (cell && drag?.mode === 'erase') {
       // interpolate so fast drags don't skip fine-grid cells

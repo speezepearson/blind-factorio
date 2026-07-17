@@ -17,7 +17,8 @@ function pathThrough(waypoints: Cell[]): Cell[] {
 }
 
 // A small working factory: red + green springs feed the reactor, whose black
-// output passes through one funnel and merges with more green in a second.
+// output passes through one funnel and merges with more green in a second;
+// the resulting blend runs through a green-targeting filter that splits it.
 export function buildStarterWorld(w: number, h: number): World {
   const world: World = { w, h, pumps: new Map(), machines: [], nextMachineId: 1 };
   const add = (typeId: string, origin: Cell, params?: Record<string, ParamValue>) => {
@@ -35,6 +36,7 @@ export function buildStarterWorld(w: number, h: number): World {
   add('reactor', [38, 58]);
   add('funnel', [70, 40]);
   add('funnel', [100, 60]);
+  add('filter', [125, 58], { target: GREEN });
 
   pipe([25, 29], [25, 26], [33, 26], [33, 62], [37, 62]); // red spring -> reactor A
   pipe([58, 29], [58, 26], [52, 26], [52, 65], [48, 65]); // green spring -> reactor B
@@ -42,7 +44,9 @@ export function buildStarterWorld(w: number, h: number): World {
   pipe([40, 57], [40, 50], [68, 50], [68, 42], [69, 42]);
   pipe([85, 42], [90, 42], [90, 62], [99, 62]); // first funnel -> second funnel
   pipe([61, 29], [61, 22], [97, 22], [97, 60], [99, 60]); // green spring -> second funnel
-  pipe([115, 62], [122, 62]); // second funnel's blend, spilling into the void
+  pipe([115, 62], [124, 62]); // second funnel's blend -> filter
+  pipe([140, 60], [146, 60]); // filtrate (pulled toward green), spilling
+  pipe([140, 65], [146, 65]); // waste (pushed away from green), spilling
 
   return world;
 }
