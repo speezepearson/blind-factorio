@@ -12,8 +12,8 @@ import {
   captureRegion, machinePlacementOk, pasteClipboard, rotateClipboard, squareTL,
 } from './clipboard';
 import type { Clipboard } from './clipboard';
-import { CELL, GRID_H, GRID_W, drawLakeWarped, drawWorld } from './render';
-import type { DragState, Tool, ViewState } from './render';
+import { CELL, GRID_H, GRID_W, drawLakeWarped, drawWorld, lakeIsStill } from './render';
+import type { DragState, LakeLayer, Tool, ViewState } from './render';
 import { Panel } from './Panel';
 import type { Hover } from './Panel';
 import './App.css';
@@ -34,6 +34,20 @@ function freshWorld(): { world: World; sim: SimState } {
 
 const hoverKey = (h: Hover): string => (h === null ? '' : h.kind === 'machine' ? `m${h.machineId}` : `p${h.key}`);
 
+// the lake: a big slow swell plus small quick ripples, drifting different ways
+const DEFAULT_LAKE: LakeLayer[] = [
+  { waveDir: 20, waveSpeed: 1, magnitude: 1, wavelength: 18, timeScale: 0.8 },
+  { waveDir: 20, waveSpeed: 2.5, magnitude: 1, wavelength: 7, timeScale: 1.2 },
+];
+
+const LAKE_FIELDS: Array<{ key: keyof LakeLayer; label: string; min: number; max: number; step: number }> = [
+  { key: 'waveDir', label: 'dir °', min: 0, max: 360, step: 5 },
+  { key: 'waveSpeed', label: 'speed c/s', min: 0, max: 10, step: 0.5 },
+  { key: 'magnitude', label: 'magnitude c', min: 0, max: 5, step: 0.25 },
+  { key: 'wavelength', label: 'wavelength c', min: 2, max: 60, step: 1 },
+  { key: 'timeScale', label: 'time scale /s', min: 0, max: 3, step: 0.1 },
+];
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [initial] = useState(freshWorld);
@@ -51,9 +65,7 @@ export default function App() {
   const [toolBlur, setToolBlur] = useState(2); // blur on the copy/erase square outside god mode, in cells
   const [warpAmp, setWarpAmp] = useState(2); // how far the square's drawn edges wander, in cells
   const [warpScale, setWarpScale] = useState(10); // feature size of the warp field, in cells
-  const [lakeAmp, setLakeAmp] = useState(3); // time-varying whole-map warp amplitude, in cells
-  const [lakeScale, setLakeScale] = useState(15); // lake ripple feature size, in cells
-  const [lakeSpeed, setLakeSpeed] = useState(1); // ripple renewals per second
+  const [lakeLayers, setLakeLayers] = useState<LakeLayer[]>(DEFAULT_LAKE);
   const [placeRotation, setPlaceRotation] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hover, setHover] = useState<Hover>(null);
@@ -69,12 +81,8 @@ export default function App() {
   warpAmpRef.current = warpAmp;
   const warpScaleRef = useRef(warpScale);
   warpScaleRef.current = warpScale;
-  const lakeAmpRef = useRef(lakeAmp);
-  lakeAmpRef.current = lakeAmp;
-  const lakeScaleRef = useRef(lakeScale);
-  lakeScaleRef.current = lakeScale;
-  const lakeSpeedRef = useRef(lakeSpeed);
-  lakeSpeedRef.current = lakeSpeed;
+  const lakeLayersRef = useRef(lakeLayers);
+  lakeLayersRef.current = lakeLayers;
   const clipboardRef = useRef(clipboard);
   clipboardRef.current = clipboard;
   const godModeRef = useRef(godMode);
@@ -231,13 +239,10 @@ export default function App() {
   const composite = () => {
     const cv = canvasRef.current;
     if (!cv) return;
-    if (godModeRef.current || lakeAmpRef.current <= 0) {
+    if (godModeRef.current || lakeIsStill(lakeLayersRef.current)) {
       cv.getContext('2d')!.drawImage(worldCanvas(), 0, 0);
     } else {
-      drawLakeWarped(
-        cv, worldCanvas(), performance.now() / 1000,
-        lakeAmpRef.current * CELL, lakeScaleRef.current * CELL, lakeSpeedRef.current,
-      );
+      drawLakeWarped(cv, worldCanvas(), performance.now() / 1000, lakeLayersRef.current);
     }
   };
 
@@ -586,39 +591,6 @@ export default function App() {
                 onChange={(e) => setWarpScale(Number(e.target.value))}
               />
             </label>
-            <label className="slider" title="Time-varying whole-map warp amplitude outside god mode, in cells">
-              Lake: {lakeAmp.toFixed(1)}
-              <input
-                type="range"
-                min={0}
-                max={3}
-                step={0.1}
-                value={lakeAmp}
-                onChange={(e) => setLakeAmp(Number(e.target.value))}
-              />
-            </label>
-            <label className="slider" title="Feature size of the lake ripples, in cells">
-              Lake scale: {lakeScale}
-              <input
-                type="range"
-                min={4}
-                max={40}
-                step={1}
-                value={lakeScale}
-                onChange={(e) => setLakeScale(Number(e.target.value))}
-              />
-            </label>
-            <label className="slider" title="How often the ripple pattern renews itself, per second">
-              Lake speed: {lakeSpeed.toFixed(1)}
-              <input
-                type="range"
-                min={0}
-                max={2}
-                step={0.1}
-                value={lakeSpeed}
-                onChange={(e) => setLakeSpeed(Number(e.target.value))}
-              />
-            </label>
           </>
         )}
         <label className="checkbox" title="Toggle with G">
@@ -634,6 +606,64 @@ export default function App() {
         <button onClick={importWorld}>Import</button>
         <button onClick={() => adoptWorld(buildStarterWorld(GRID_W, GRID_H))}>Reset world</button>
       </div>
+      {godMode && (
+        <details className="lake-editor">
+          <summary>
+            Lake ripple layers ({lakeLayers.length}
+            {lakeIsStill(lakeLayers) ? ', still' : ''})
+          </summary>
+          <table>
+            <thead>
+              <tr>
+                {LAKE_FIELDS.map((f) => (
+                  <th key={f.key}>{f.label}</th>
+                ))}
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {lakeLayers.map((layer, i) => (
+                <tr key={i}>
+                  {LAKE_FIELDS.map((f) => (
+                    <td key={f.key}>
+                      <input
+                        type="number"
+                        min={f.min}
+                        max={f.max}
+                        step={f.step}
+                        value={layer[f.key]}
+                        onChange={(e) => {
+                          const v = e.target.valueAsNumber;
+                          if (!Number.isFinite(v)) return;
+                          setLakeLayers((ls) => ls.map((l, j) => (j === i ? { ...l, [f.key]: v } : l)));
+                        }}
+                      />
+                    </td>
+                  ))}
+                  <td>
+                    <button
+                      title="Remove this layer"
+                      onClick={() => setLakeLayers((ls) => ls.filter((_, j) => j !== i))}
+                    >
+                      ✕
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button
+            onClick={() =>
+              setLakeLayers((ls) => [
+                ...ls,
+                { waveDir: 0, waveSpeed: 1, magnitude: 1, wavelength: 12, timeScale: 1 },
+              ])
+            }
+          >
+            + Add layer
+          </button>
+        </details>
+      )}
       <div className="main">
         <canvas
           ref={canvasRef}

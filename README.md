@@ -71,9 +71,10 @@ Two views of the same world:
   the cursor, but its drawn outline is displaced through a world-locked smooth noise
   field ("Warp" amplitude + "Warp scale" sliders, in cells) and Gaussian-blurred ("Tool
   blur" slider) — so the blob wobbles as it moves and its exact position and edges can't
-  be pinned down. On top of that, the whole map view is composited through a slowly
-  time-evolving warp field ("Lake" amplitude/scale/speed sliders), like watching the
-  factory through the surface of a lake. All of this is cosmetic; the affected region
+  be pinned down. On top of that, the whole map view is composited through a
+  time-evolving warp field, like watching the factory through the surface of a lake —
+  a sum of noise layers, each with its own wave direction/speed (drift), magnitude,
+  wavelength, and time scale, edited in the collapsible "Lake ripple layers" table. All of this is cosmetic; the affected region
   stays a perfect square, the world never moves, and mouse input maps to the true grid.
   Imprecision-by-fog is a core game-feel experiment.
 

@@ -67,50 +67,82 @@ function warpOffset(px: number, py: number, ampPx: number, scalePx: number): [nu
   ];
 }
 
-// Composite `src` onto `dst` through the time-varying lake field: each small
-// tile of the destination samples the source displaced by the field at that
-// spot, like looking at the map through the surface of a lake. `speed` is
-// roughly how many times per second the ripple pattern renews itself.
+// One layer of the lake: an independent noise field with its own feature
+// size, displacement amplitude, evolution rate, and a directional drift that
+// makes its ripples travel across the map.
+export interface LakeLayer {
+  waveDir: number; // degrees; direction the ripples travel
+  waveSpeed: number; // drift speed, cells per second
+  magnitude: number; // displacement amplitude, cells
+  wavelength: number; // feature size, cells
+  timeScale: number; // pattern renewals per second
+}
+
+export const lakeIsStill = (layers: LakeLayer[]): boolean =>
+  layers.every((l) => l.magnitude <= 0 || l.wavelength <= 0);
+
+// Composite `src` onto `dst` through the time-varying lake field (the sum of
+// all layers): each small tile of the destination samples the source
+// displaced by the field at that spot, like looking at the map through the
+// surface of a lake.
 const LAKE_TILE = 2 * CELL; // px; small vs. the field's feature size, so seams stay sub-blur
 
 export function drawLakeWarped(
-  dst: HTMLCanvasElement, src: HTMLCanvasElement,
-  tSec: number, ampPx: number, scalePx: number, speed: number,
+  dst: HTMLCanvasElement, src: HTMLCanvasElement, tSec: number, layers: LakeLayer[],
 ): void {
   const ctx = dst.getContext('2d');
   if (!ctx) return;
   const w = src.width;
   const h = src.height;
-  const z = tSec * speed;
-  // corner values repeat across many tiles; compute each once per frame
-  const corners = new Map<number, [number, number]>();
-  const cornerVec = (ix: number, iy: number): [number, number] => {
+  const prep = layers
+    .filter((l) => l.magnitude > 0 && l.wavelength > 0)
+    .map((l, li) => {
+      const rad = (l.waveDir * Math.PI) / 180;
+      return {
+        ampPx: l.magnitude * CELL,
+        scalePx: l.wavelength * CELL,
+        // sampling the field shifted by -t·v makes the pattern drift toward waveDir
+        ox: -tSec * l.waveSpeed * Math.cos(rad) * CELL,
+        oy: -tSec * l.waveSpeed * Math.sin(rad) * CELL,
+        z: tSec * l.timeScale,
+        seedX: 0x51ab3e97 ^ Math.imul(li + 1, 0x9e3779b9),
+        seedY: 0x2c1b3c6d ^ Math.imul(li + 1, 0x85ebca6b),
+        // corner values repeat across many tiles; compute each once per frame
+        corners: new Map<number, [number, number]>(),
+      };
+    });
+  type Prep = (typeof prep)[number];
+  const cornerVec = (p: Prep, ix: number, iy: number): [number, number] => {
     const key = ix * 0x10000 + iy;
-    let v = corners.get(key);
+    let v = p.corners.get(key);
     if (!v) {
-      v = [cornerWave(ix, iy, z, 0x51ab3e97), cornerWave(ix, iy, z, 0x2c1b3c6d)];
-      corners.set(key, v);
+      v = [cornerWave(ix, iy, p.z, p.seedX), cornerWave(ix, iy, p.z, p.seedY)];
+      p.corners.set(key, v);
     }
     return v;
   };
   for (let y = 0; y < h; y += LAKE_TILE) {
     for (let x = 0; x < w; x += LAKE_TILE) {
-      const nx = (x + LAKE_TILE / 2) / scalePx;
-      const ny = (y + LAKE_TILE / 2) / scalePx;
-      const ix = Math.floor(nx);
-      const iy = Math.floor(ny);
-      const fx = nx - ix;
-      const fy = ny - iy;
-      const sxw = fx * fx * (3 - 2 * fx);
-      const syw = fy * fy * (3 - 2 * fy);
-      const a = cornerVec(ix, iy);
-      const b = cornerVec(ix + 1, iy);
-      const c = cornerVec(ix, iy + 1);
-      const d = cornerVec(ix + 1, iy + 1);
-      const blend = (ch: 0 | 1) =>
-        a[ch] + (b[ch] - a[ch]) * sxw + (c[ch] - a[ch]) * syw + (a[ch] - b[ch] - c[ch] + d[ch]) * sxw * syw;
-      const dx = (blend(0) * 2 - 1) * ampPx;
-      const dy = (blend(1) * 2 - 1) * ampPx;
+      let dx = 0;
+      let dy = 0;
+      for (const p of prep) {
+        const nx = (x + LAKE_TILE / 2 + p.ox) / p.scalePx;
+        const ny = (y + LAKE_TILE / 2 + p.oy) / p.scalePx;
+        const ix = Math.floor(nx);
+        const iy = Math.floor(ny);
+        const fx = nx - ix;
+        const fy = ny - iy;
+        const sxw = fx * fx * (3 - 2 * fx);
+        const syw = fy * fy * (3 - 2 * fy);
+        const a = cornerVec(p, ix, iy);
+        const b = cornerVec(p, ix + 1, iy);
+        const c = cornerVec(p, ix, iy + 1);
+        const d = cornerVec(p, ix + 1, iy + 1);
+        const blend = (ch: 0 | 1) =>
+          a[ch] + (b[ch] - a[ch]) * sxw + (c[ch] - a[ch]) * syw + (a[ch] - b[ch] - c[ch] + d[ch]) * sxw * syw;
+        dx += (blend(0) * 2 - 1) * p.ampPx;
+        dy += (blend(1) * 2 - 1) * p.ampPx;
+      }
       const sx = Math.max(0, Math.min(w - LAKE_TILE, x + dx));
       const sy = Math.max(0, Math.min(h - LAKE_TILE, y + dy));
       ctx.drawImage(src, sx, sy, LAKE_TILE, LAKE_TILE, x, y, LAKE_TILE, LAKE_TILE);
