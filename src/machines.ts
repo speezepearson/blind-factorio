@@ -143,7 +143,7 @@ export const MACHINE_TYPES: MachineType[] = [
     id: 'funnel',
     name: 'Funnel',
     bodyColor: '#f4e3bc',
-    cells: scaleCells([[0, 0], [1, 0], [2, 0]]),
+    cells: scaleCells([[0, 0], [1, 0], [2, 0], [0, 1]]),
     ports: [
       { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3]]) },
       { id: 'out', label: 'B', kind: 'out', edges: scaleEdges([[[2, 0], 1]]) },
@@ -205,7 +205,7 @@ export const MACHINE_TYPES: MachineType[] = [
     id: 'buffer',
     name: 'Buffer',
     bodyColor: '#cbd7e3',
-    cells: scaleCells([[0, 0], [1, 0], [0, 1], [1, 1]]),
+    cells: scaleCells([[0, 0], [1, 0], [0, 2], [0, 1], [1, 1]]),
     ports: [
       { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3], [[0, 1], 3]]) },
       { id: 'out', label: 'B', kind: 'out', edges: scaleEdges([[[1, 0], 1], [[1, 1], 1]]) },
