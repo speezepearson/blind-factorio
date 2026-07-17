@@ -25,6 +25,22 @@ export function totalRate(fm: FluidMap | undefined): number {
 
 const parseHex = (h: string): number[] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 
+// Distances between colors are expressed as a fraction of the largest
+// possible RGB distance (black to white).
+const MAX_COLOR_DIST = Math.sqrt(3) * 255;
+
+// Total rate of fluid whose color lies within `tolerance` (0..1) of target.
+function rateNear(fm: FluidMap, target: string, tolerance: number): number {
+  const t = parseHex(target);
+  let sum = 0;
+  for (const [color, rate] of Object.entries(fm)) {
+    const c = parseHex(color);
+    const d = Math.hypot(c[0] - t[0], c[1] - t[1], c[2] - t[2]) / MAX_COLOR_DIST;
+    if (d <= tolerance + 1e-9) sum += rate;
+  }
+  return sum;
+}
+
 function toHexColor(rgb: number[]): string {
   const c = (n: number) => Math.round(Math.max(0, Math.min(255, n))).toString(16).padStart(2, '0');
   return `#${c(rgb[0])}${c(rgb[1])}${c(rgb[2])}`;
@@ -108,12 +124,17 @@ export const MACHINE_TYPES: MachineType[] = [
       { id: 'b', label: 'B', kind: 'in', edges: [[[9, 7], 1]] },
       { id: 'out', label: 'C', kind: 'out', edges: [[[2, 0], 0]] },
     ],
+    params: [
+      { key: 'tolA', label: 'Port A red tolerance', kind: 'number', default: 0.15, min: 0, max: 1, step: 0.01 },
+      { key: 'tolB', label: 'Port B green tolerance', kind: 'number', default: 0.15, min: 0, max: 1, step: 0.01 },
+    ],
     ruleText:
-      'If port A receives at least 1 L/s of red fluid and port B receives any green fluid, ' +
-      'port C produces 1 − e^(−green rate) L/s of black fluid.',
-    compute: (inputs): Record<string, FluidMap> => {
-      const red = inputs.a?.[RED] ?? 0;
-      const green = inputs.b?.[GREEN] ?? 0;
+      'If port A receives at least 1 L/s of fluid within its tolerance of red, and port B ' +
+      'receives any fluid within its tolerance of green, port C produces 1 − e^(−green rate) ' +
+      'L/s of black fluid. Tolerances are fractions of the black-to-white color distance.',
+    compute: (inputs, params): Record<string, FluidMap> => {
+      const red = rateNear(inputs.a ?? {}, RED, Number(params.tolA));
+      const green = rateNear(inputs.b ?? {}, GREEN, Number(params.tolB));
       if (red >= 1 && green > 1e-4) return { out: { [BLACK]: 1 - Math.exp(-green) } };
       return {};
     },

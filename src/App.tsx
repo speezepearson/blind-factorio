@@ -139,7 +139,12 @@ export default function App() {
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const hoverCellRef = useRef<Cell | null>(null);
-  const dragRef = useRef<{ mode: 'pipe'; path: Cell[] } | { mode: 'erase'; last: Cell } | null>(null);
+  const dragRef = useRef<
+    | { mode: 'pipe'; path: Cell[] }
+    | { mode: 'erase'; last: Cell }
+    | { mode: 'move'; machineId: number; grab: Cell } // grab = cursor offset from origin
+    | null
+  >(null);
 
   const eventCell = (e: { clientX: number; clientY: number }): Cell | null => {
     const cv = canvasRef.current;
@@ -172,9 +177,9 @@ export default function App() {
     );
   };
 
-  const machinePlacementOk = (placed: PlacedMachine): boolean => {
+  const machinePlacementOk = (placed: PlacedMachine, ignoreId?: number): boolean => {
     const world = worldRef.current;
-    const occupied = machineCellMap(placeAll(world));
+    const occupied = machineCellMap(placeAll(world).filter((pm) => pm.machine.id !== ignoreId));
     return placed.cells.every(
       ([x, y]) =>
         x >= 0 && y >= 0 && x < world.w && y < world.h &&
@@ -602,6 +607,13 @@ export default function App() {
     } else if (t.kind === 'edit') {
       const pm = machineCellMap(placeAll(worldRef.current)).get(cellKey(cell[0], cell[1]));
       setSelectedId(pm ? pm.machine.id : null);
+      if (pm) {
+        dragRef.current = {
+          mode: 'move',
+          machineId: pm.machine.id,
+          grab: [cell[0] - pm.machine.origin[0], cell[1] - pm.machine.origin[1]],
+        };
+      }
     } else if (t.kind === 'place') {
       const world = worldRef.current;
       const machine: Machine = {
@@ -640,6 +652,18 @@ export default function App() {
         // machine cells are allowed in the path (no pumps appear on them, so
         // the pipe tunnels through and resumes on the far side)
         extendPath(drag.path, cell, ([x, y]) => x < 0 || y < 0 || x >= GRID_W || y >= GRID_H);
+      }
+    } else if (cell && drag?.mode === 'move') {
+      // live-move the machine, refusing spots where it wouldn't fit
+      const machine = worldRef.current.machines.find((m) => m.id === drag.machineId);
+      if (machine) {
+        const target: Cell = [cell[0] - drag.grab[0], cell[1] - drag.grab[1]];
+        if (target[0] !== machine.origin[0] || target[1] !== machine.origin[1]) {
+          const candidate = { ...machine, origin: target };
+          if (machinePlacementOk(placeMachine(candidate, TYPE_BY_ID[machine.typeId]), machine.id)) {
+            machine.origin = target;
+          }
+        }
       }
     } else if (cell && drag?.mode === 'erase') {
       // interpolate so fast drags don't skip fine-grid cells
@@ -842,7 +866,7 @@ export default function App() {
           {godMode && (
             <li>
               <b>God mode:</b> click a machine button to place one (<b>R</b> rotates), or use{' '}
-              <b>Edit</b> to tune a machine's parameters.
+              <b>Edit</b> to tune a machine's parameters or drag it somewhere else.
             </li>
           )}
         </ul>
