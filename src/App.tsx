@@ -143,9 +143,45 @@ export default function App() {
   const dragRef = useRef<
     | { mode: 'pipe'; path: Cell[] }
     | { mode: 'erase'; last: Cell }
-    | { mode: 'move'; machineId: number; grab: Cell } // grab = cursor offset from origin
+    | { mode: 'move'; machineId: number; grab: Cell; moved?: boolean } // grab = cursor offset from origin
     | null
   >(null);
+
+  // ---- undo/redo ---------------------------------------------------------
+  // Snapshot the whole world before each mutating gesture. Rapid repeats of
+  // the same coalesce key (e.g. dragging one param slider) share one entry.
+
+  const undoRef = useRef<World[]>([]);
+  const redoRef = useRef<World[]>([]);
+  const lastCkptRef = useRef<{ key: string; time: number } | null>(null);
+
+  const checkpoint = (coalesceKey?: string) => {
+    if (coalesceKey) {
+      const last = lastCkptRef.current;
+      if (last && last.key === coalesceKey && Date.now() - last.time < 1200) {
+        last.time = Date.now();
+        return;
+      }
+      lastCkptRef.current = { key: coalesceKey, time: Date.now() };
+    } else {
+      lastCkptRef.current = null;
+    }
+    undoRef.current.push(structuredClone(worldRef.current));
+    if (undoRef.current.length > 100) undoRef.current.shift();
+    redoRef.current = [];
+  };
+
+  const timeTravel = (from: React.RefObject<World[]>, to: React.RefObject<World[]>) => {
+    const world = from.current.pop();
+    if (!world) return;
+    to.current.push(structuredClone(worldRef.current));
+    worldRef.current = world;
+    lastCkptRef.current = null;
+    setSelectedId(null);
+    draw();
+  };
+  const undo = () => timeTravel(undoRef, redoRef);
+  const redo = () => timeTravel(redoRef, undoRef);
 
   const eventCell = (e: { clientX: number; clientY: number }): Cell | null => {
     const cv = canvasRef.current;
@@ -208,9 +244,14 @@ export default function App() {
   const commitPipePath = (path: Cell[]) => {
     const world = worldRef.current;
     const occupied = machineCellMap(placeAll(world));
-    for (const { cell, inSide, outSide } of orientPath(path)) {
+    const placements = orientPath(path).filter(
+      ({ cell }) => !occupied.has(cellKey(cell[0], cell[1])),
+    );
+    if (placements.length === 0) return;
+    checkpoint();
+    for (const { cell, inSide, outSide } of placements) {
       const k = cellKey(cell[0], cell[1]);
-      if (!occupied.has(k)) world.pumps.set(k, mergePumps(world.pumps.get(k), { inSide, outSide }));
+      world.pumps.set(k, mergePumps(world.pumps.get(k), { inSide, outSide }));
     }
   };
 
@@ -573,6 +614,17 @@ export default function App() {
       draw();
     }, TICK_MS);
     const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault();
+        redo();
+        return;
+      }
       if (e.key === 'Escape') setClipboard(null);
       if (e.key === 'r' || e.key === 'R') {
         if (toolRef.current.kind === 'place') setPlaceRotation((r) => (r + 1) % 4);
@@ -603,6 +655,7 @@ export default function App() {
       // starting on a machine is fine: pumps appear once the drag leaves it
       dragRef.current = { mode: 'pipe', path: [cell] };
     } else if (t.kind === 'erase') {
+      checkpoint();
       dragRef.current = { mode: 'erase', last: cell };
       eraseRegion(cell);
     } else if (t.kind === 'edit') {
@@ -624,12 +677,14 @@ export default function App() {
         rotation: placeRotationRef.current,
       };
       if (machinePlacementOk(placeMachine(machine, TYPE_BY_ID[t.typeId]))) {
+        checkpoint();
         world.machines.push(machine);
         world.nextMachineId++;
       }
     } else {
       const clip = clipboardRef.current;
       if (clip) {
+        checkpoint();
         pasteClipboard(squareTL(cell, clip.size), clip);
       } else {
         const captured = captureRegion(squareTL(cell, copyCells()));
@@ -662,6 +717,10 @@ export default function App() {
         if (target[0] !== machine.origin[0] || target[1] !== machine.origin[1]) {
           const candidate = { ...machine, origin: target };
           if (machinePlacementOk(placeMachine(candidate, TYPE_BY_ID[machine.typeId]), machine.id)) {
+            if (!drag.moved) {
+              checkpoint();
+              drag.moved = true;
+            }
             machine.origin = target;
           }
         }
@@ -689,6 +748,7 @@ export default function App() {
   // ---- world sharing -----------------------------------------------------
 
   const adoptWorld = (world: World) => {
+    checkpoint();
     worldRef.current = world;
     simRef.current = prewarm(world);
     setClipboard(null);
@@ -775,6 +835,7 @@ export default function App() {
             defs.map((pd) => {
               const value = machine.params?.[pd.key] ?? pd.default;
               const set = (v: ParamValue) => {
+                checkpoint(`param:${machine.id}:${pd.key}`);
                 machine.params = { ...machine.params, [pd.key]: v };
                 setTick((t) => t + 1);
               };
@@ -931,6 +992,12 @@ export default function App() {
         <button className={tool.kind === 'erase' ? 'active' : ''} onClick={() => setTool({ kind: 'erase' })}>
           Erase
         </button>
+        <button disabled={undoRef.current.length === 0} onClick={undo} title="Ctrl+Z">
+          Undo
+        </button>
+        <button disabled={redoRef.current.length === 0} onClick={redo} title="Ctrl+Shift+Z">
+          Redo
+        </button>
         {godMode && (
           <>
             <button className={tool.kind === 'edit' ? 'active' : ''} onClick={() => setTool({ kind: 'edit' })}>
@@ -993,17 +1060,7 @@ export default function App() {
         <button onClick={shareWorld}>{shareLabel}</button>
         <button onClick={exportWorld}>{exportLabel}</button>
         <button onClick={importWorld}>Import</button>
-        <button
-          onClick={() => {
-            const fresh = freshWorld();
-            worldRef.current = fresh.world;
-            simRef.current = fresh.sim;
-            setClipboard(null);
-            draw();
-          }}
-        >
-          Reset world
-        </button>
+        <button onClick={() => adoptWorld(buildStarterWorld(GRID_W, GRID_H))}>Reset world</button>
       </div>
       <div className="main">
         <canvas
