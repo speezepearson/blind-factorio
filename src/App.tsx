@@ -12,7 +12,7 @@ import {
   captureRegion, machinePlacementOk, pasteClipboard, rotateClipboard, squareTL,
 } from './clipboard';
 import type { Clipboard } from './clipboard';
-import { CELL, GRID_H, GRID_W, drawWorld } from './render';
+import { CELL, GRID_H, GRID_W, drawLakeWarped, drawWorld } from './render';
 import type { DragState, Tool, ViewState } from './render';
 import { Panel } from './Panel';
 import type { Hover } from './Panel';
@@ -48,9 +48,12 @@ export default function App() {
   // machines + blur.
   const [godMode, setGodMode] = useState(false);
   const [blurPx, setBlurPx] = useState(3); // whole-canvas Gaussian blur outside god mode
-  const [toolBlur, setToolBlur] = useState(3); // blur on the copy/erase square outside god mode, in cells
+  const [toolBlur, setToolBlur] = useState(2); // blur on the copy/erase square outside god mode, in cells
   const [warpAmp, setWarpAmp] = useState(2); // how far the square's drawn edges wander, in cells
   const [warpScale, setWarpScale] = useState(10); // feature size of the warp field, in cells
+  const [lakeAmp, setLakeAmp] = useState(3); // time-varying whole-map warp amplitude, in cells
+  const [lakeScale, setLakeScale] = useState(15); // lake ripple feature size, in cells
+  const [lakeSpeed, setLakeSpeed] = useState(1); // ripple renewals per second
   const [placeRotation, setPlaceRotation] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hover, setHover] = useState<Hover>(null);
@@ -66,6 +69,12 @@ export default function App() {
   warpAmpRef.current = warpAmp;
   const warpScaleRef = useRef(warpScale);
   warpScaleRef.current = warpScale;
+  const lakeAmpRef = useRef(lakeAmp);
+  lakeAmpRef.current = lakeAmp;
+  const lakeScaleRef = useRef(lakeScale);
+  lakeScaleRef.current = lakeScale;
+  const lakeSpeedRef = useRef(lakeSpeed);
+  lakeSpeedRef.current = lakeSpeed;
   const clipboardRef = useRef(clipboard);
   clipboardRef.current = clipboard;
   const godModeRef = useRef(godMode);
@@ -185,10 +194,9 @@ export default function App() {
   // ---- copy/paste --------------------------------------------------------
 
   // Photograph the copied region (with the tool overlay suppressed) for use
-  // as the paste ghost.
+  // as the paste ghost. Reads the offscreen world canvas, so the snapshot is
+  // unaffected by the lake warp.
   const snapshotRegion = (cell: Cell): HTMLCanvasElement | undefined => {
-    const cv = canvasRef.current;
-    if (!cv) return undefined;
     const n = copySizeRef.current;
     const [tlx, tly] = squareTL(cell, n);
     const px = n * CELL;
@@ -198,17 +206,42 @@ export default function App() {
     const snap = document.createElement('canvas');
     snap.width = px;
     snap.height = px;
-    snap.getContext('2d')!.drawImage(cv, tlx * CELL, tly * CELL, px, px, 0, 0, px, px);
+    snap.getContext('2d')!.drawImage(worldCanvas(), tlx * CELL, tly * CELL, px, px, 0, 0, px, px);
     hoverCellRef.current = prevHover;
     draw();
     return snap;
   };
 
   // ---- drawing -----------------------------------------------------------
+  // The world (plus tool overlays) is rendered to an offscreen canvas; a rAF
+  // loop composites it onto the visible canvas, warped through the
+  // time-varying "lake" field outside god mode.
 
-  const draw = () => {
+  const worldCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const worldCanvas = (): HTMLCanvasElement => {
+    if (!worldCanvasRef.current) {
+      const c = document.createElement('canvas');
+      c.width = GRID_W * CELL;
+      c.height = GRID_H * CELL;
+      worldCanvasRef.current = c;
+    }
+    return worldCanvasRef.current;
+  };
+
+  const composite = () => {
     const cv = canvasRef.current;
     if (!cv) return;
+    if (godModeRef.current || lakeAmpRef.current <= 0) {
+      cv.getContext('2d')!.drawImage(worldCanvas(), 0, 0);
+    } else {
+      drawLakeWarped(
+        cv, worldCanvas(), performance.now() / 1000,
+        lakeAmpRef.current * CELL, lakeScaleRef.current * CELL, lakeSpeedRef.current,
+      );
+    }
+  };
+
+  const draw = () => {
     const view: ViewState = {
       world: worldRef.current,
       sim: simRef.current,
@@ -224,7 +257,8 @@ export default function App() {
       selectedId: selectedIdRef.current,
       placeRotation: placeRotationRef.current,
     };
-    drawWorld(cv, view);
+    drawWorld(worldCanvas(), view);
+    composite();
   };
 
   // Leaving god mode drops the god-only tools and selection.
@@ -267,9 +301,14 @@ export default function App() {
       }
     };
     window.addEventListener('keydown', onKey);
+    let raf = requestAnimationFrame(function loop() {
+      composite();
+      raf = requestAnimationFrame(loop);
+    });
     return () => {
       clearInterval(iv);
       window.removeEventListener('keydown', onKey);
+      cancelAnimationFrame(raf);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -545,6 +584,39 @@ export default function App() {
                 step={1}
                 value={warpScale}
                 onChange={(e) => setWarpScale(Number(e.target.value))}
+              />
+            </label>
+            <label className="slider" title="Time-varying whole-map warp amplitude outside god mode, in cells">
+              Lake: {lakeAmp.toFixed(1)}
+              <input
+                type="range"
+                min={0}
+                max={3}
+                step={0.1}
+                value={lakeAmp}
+                onChange={(e) => setLakeAmp(Number(e.target.value))}
+              />
+            </label>
+            <label className="slider" title="Feature size of the lake ripples, in cells">
+              Lake scale: {lakeScale}
+              <input
+                type="range"
+                min={4}
+                max={40}
+                step={1}
+                value={lakeScale}
+                onChange={(e) => setLakeScale(Number(e.target.value))}
+              />
+            </label>
+            <label className="slider" title="How often the ripple pattern renews itself, per second">
+              Lake speed: {lakeSpeed.toFixed(1)}
+              <input
+                type="range"
+                min={0}
+                max={2}
+                step={0.1}
+                value={lakeSpeed}
+                onChange={(e) => setLakeSpeed(Number(e.target.value))}
               />
             </label>
           </>

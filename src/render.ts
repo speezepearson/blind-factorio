@@ -13,38 +13,109 @@ export const GRID_W = 170;
 export const GRID_H = 110;
 export const CELL = 6;
 
-// --- world-locked warp field ------------------------------------------------
+// --- warp noise ---------------------------------------------------------------
 // Smooth value noise anchored to map pixels. Outside god mode the tool square
-// is drawn through this fixed field, so its apparent shape undulates as it
-// moves across the world — purely cosmetic; the real region stays a square.
+// is drawn through a fixed slice of this field, so its apparent shape undulates
+// as it moves across the world; the whole map view is composited through a
+// slowly time-evolving slice (the "lake" effect). Purely cosmetic — the real
+// region stays a square and the world itself never moves.
 
-function latticeHash(ix: number, iy: number, seed: number): number {
-  let h = (Math.imul(ix, 0x27d4eb2d) ^ Math.imul(iy, 0x165667b1) ^ seed) >>> 0;
+function latticeHash(ix: number, iy: number, iz: number, seed: number): number {
+  let h = (Math.imul(ix, 0x27d4eb2d) ^ Math.imul(iy, 0x165667b1) ^ Math.imul(iz, 0x9e3779b1) ^ seed) >>> 0;
   h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
   h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
   return ((h ^ (h >>> 16)) >>> 0) / 0xffffffff;
 }
 
-function valueNoise(x: number, y: number, seed: number): number {
+// 2D slice at integer time iz
+function valueNoise(x: number, y: number, iz: number, seed: number): number {
   const ix = Math.floor(x);
   const iy = Math.floor(y);
   const fx = x - ix;
   const fy = y - iy;
   const sx = fx * fx * (3 - 2 * fx);
   const sy = fy * fy * (3 - 2 * fy);
-  const a = latticeHash(ix, iy, seed);
-  const b = latticeHash(ix + 1, iy, seed);
-  const c = latticeHash(ix, iy + 1, seed);
-  const d = latticeHash(ix + 1, iy + 1, seed);
+  const a = latticeHash(ix, iy, iz, seed);
+  const b = latticeHash(ix + 1, iy, iz, seed);
+  const c = latticeHash(ix, iy + 1, iz, seed);
+  const d = latticeHash(ix + 1, iy + 1, iz, seed);
   return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
 }
 
-// displacement (in px) of the warp field at map-pixel (px, py)
+// A lattice corner's value over time: Catmull-Rom through its own hashed
+// keyframe sequence, on its own hashed phase-shifted clock. Both matter:
+// smoothstep between two keyframes has zero velocity at every keyframe, and
+// with a shared clock the whole field would visibly freeze in sync once per
+// 1/speed seconds. Catmull-Rom keeps velocity nonzero through keyframes, and
+// the per-corner phase means no two corners hit keyframes together anyway.
+function cornerWave(ix: number, iy: number, z: number, seed: number): number {
+  const zc = z + latticeHash(ix, iy, 0, seed ^ 0x5bf03635);
+  const i = Math.floor(zc);
+  const f = zc - i;
+  const p0 = latticeHash(ix, iy, i - 1, seed);
+  const p1 = latticeHash(ix, iy, i, seed);
+  const p2 = latticeHash(ix, iy, i + 1, seed);
+  const p3 = latticeHash(ix, iy, i + 2, seed);
+  return p1 + 0.5 * f * (p2 - p0 + f * (2 * p0 - 5 * p1 + 4 * p2 - p3 + f * (3 * (p1 - p2) + p3 - p0)));
+}
+
+// displacement (in px) of the static tool-square warp field at map-pixel (px, py)
 function warpOffset(px: number, py: number, ampPx: number, scalePx: number): [number, number] {
   return [
-    (valueNoise(px / scalePx, py / scalePx, 0x9e3779b9) * 2 - 1) * ampPx,
-    (valueNoise(px / scalePx, py / scalePx, 0x7f4a7c15) * 2 - 1) * ampPx,
+    (valueNoise(px / scalePx, py / scalePx, 0, 0x9e3779b9) * 2 - 1) * ampPx,
+    (valueNoise(px / scalePx, py / scalePx, 0, 0x7f4a7c15) * 2 - 1) * ampPx,
   ];
+}
+
+// Composite `src` onto `dst` through the time-varying lake field: each small
+// tile of the destination samples the source displaced by the field at that
+// spot, like looking at the map through the surface of a lake. `speed` is
+// roughly how many times per second the ripple pattern renews itself.
+const LAKE_TILE = 2 * CELL; // px; small vs. the field's feature size, so seams stay sub-blur
+
+export function drawLakeWarped(
+  dst: HTMLCanvasElement, src: HTMLCanvasElement,
+  tSec: number, ampPx: number, scalePx: number, speed: number,
+): void {
+  const ctx = dst.getContext('2d');
+  if (!ctx) return;
+  const w = src.width;
+  const h = src.height;
+  const z = tSec * speed;
+  // corner values repeat across many tiles; compute each once per frame
+  const corners = new Map<number, [number, number]>();
+  const cornerVec = (ix: number, iy: number): [number, number] => {
+    const key = ix * 0x10000 + iy;
+    let v = corners.get(key);
+    if (!v) {
+      v = [cornerWave(ix, iy, z, 0x51ab3e97), cornerWave(ix, iy, z, 0x2c1b3c6d)];
+      corners.set(key, v);
+    }
+    return v;
+  };
+  for (let y = 0; y < h; y += LAKE_TILE) {
+    for (let x = 0; x < w; x += LAKE_TILE) {
+      const nx = (x + LAKE_TILE / 2) / scalePx;
+      const ny = (y + LAKE_TILE / 2) / scalePx;
+      const ix = Math.floor(nx);
+      const iy = Math.floor(ny);
+      const fx = nx - ix;
+      const fy = ny - iy;
+      const sxw = fx * fx * (3 - 2 * fx);
+      const syw = fy * fy * (3 - 2 * fy);
+      const a = cornerVec(ix, iy);
+      const b = cornerVec(ix + 1, iy);
+      const c = cornerVec(ix, iy + 1);
+      const d = cornerVec(ix + 1, iy + 1);
+      const blend = (ch: 0 | 1) =>
+        a[ch] + (b[ch] - a[ch]) * sxw + (c[ch] - a[ch]) * syw + (a[ch] - b[ch] - c[ch] + d[ch]) * sxw * syw;
+      const dx = (blend(0) * 2 - 1) * ampPx;
+      const dy = (blend(1) * 2 - 1) * ampPx;
+      const sx = Math.max(0, Math.min(w - LAKE_TILE, x + dx));
+      const sy = Math.max(0, Math.min(h - LAKE_TILE, y + dy));
+      ctx.drawImage(src, sx, sy, LAKE_TILE, LAKE_TILE, x, y, LAKE_TILE, LAKE_TILE);
+    }
+  }
 }
 
 // Set the current path to the rect with its perimeter displaced through the
@@ -262,9 +333,10 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
 
   for (const pm of placed) drawMachine(pm);
 
-  // drag preview: pipe line
+  // drag preview: pipe line — god only; players draw blind, guided just by
+  // the crosshair cursor
   const drag = view.drag;
-  if (drag?.mode === 'pipe') {
+  if (view.godMode && drag?.mode === 'pipe') {
     for (const { cell, inSide, outSide } of orientPath(drag.path)) {
       if (!occupied.has(cellKey(cell[0], cell[1]))) {
         drawPumpBase(cell[0], cell[1], 0.55);
@@ -340,8 +412,8 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     }
   }
 
-  // hover highlight
-  if (hc && t.kind === 'pipe') {
+  // hover highlight — god only, same reasoning as the pipe drag preview
+  if (view.godMode && hc && t.kind === 'pipe') {
     ctx.strokeStyle = 'rgba(60,60,60,0.5)';
     ctx.lineWidth = 1.5;
     ctx.strokeRect(hc[0] * CELL + 1, hc[1] * CELL + 1, CELL - 2, CELL - 2);

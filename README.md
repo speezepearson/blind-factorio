@@ -52,7 +52,9 @@ npm run lint    # oxlint
 ## UI architecture (read before touching App.tsx)
 
 The world is **deliberately not React state**. `worldRef.current` is mutated in place by
-tool gestures; a 110 ms interval advances the sim and redraws the canvas imperatively;
+tool gestures; a 110 ms interval advances the sim and redraws imperatively — the world and
+tool overlays render to an *offscreen* canvas, and a requestAnimationFrame loop composites
+that onto the visible canvas (through the time-varying "lake" warp outside god mode);
 a `setTick` counter forces React re-renders only so the side panel shows live values.
 Every piece of state the draw loop needs is shadowed in a ref (`toolRef`, `godModeRef`, …)
 so the interval and mouse handlers never close over stale values. React state proper only
@@ -69,7 +71,10 @@ Two views of the same world:
   the cursor, but its drawn outline is displaced through a world-locked smooth noise
   field ("Warp" amplitude + "Warp scale" sliders, in cells) and Gaussian-blurred ("Tool
   blur" slider) — so the blob wobbles as it moves and its exact position and edges can't
-  be pinned down. All of this is cosmetic; the affected region stays a perfect square.
+  be pinned down. On top of that, the whole map view is composited through a slowly
+  time-evolving warp field ("Lake" amplitude/scale/speed sliders), like watching the
+  factory through the surface of a lake. All of this is cosmetic; the affected region
+  stays a perfect square, the world never moves, and mouse input maps to the true grid.
   Imprecision-by-fog is a core game-feel experiment.
 
 ## Sharing
