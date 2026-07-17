@@ -103,6 +103,7 @@ export default function App() {
   const [copySuper, setCopySuper] = useState(3); // copy square side, in supercells (odd)
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   const [hideLabels, setHideLabels] = useState(false);
+  const [blurPx, setBlurPx] = useState(2); // Gaussian blur strength while labels are hidden
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hover, setHover] = useState<Hover>(null);
   const [, setTick] = useState(0); // re-render so the info panel shows live flows
@@ -791,6 +792,18 @@ export default function App() {
           <input type="checkbox" checked={hideLabels} onChange={(e) => setHideLabels(e.target.checked)} />
           Hide labels
         </label>
+        <label className="slider" title="Gaussian blur applied while labels are hidden">
+          Blur: {blurPx.toFixed(1)}
+          <input
+            type="range"
+            min={0}
+            max={8}
+            step={0.5}
+            value={blurPx}
+            disabled={!hideLabels}
+            onChange={(e) => setBlurPx(Number(e.target.value))}
+          />
+        </label>
         <button
           onClick={() => {
             const fresh = freshWorld();
@@ -808,6 +821,7 @@ export default function App() {
           ref={canvasRef}
           width={GRID_W * CELL}
           height={GRID_H * CELL}
+          style={{ filter: hideLabels && blurPx > 0 ? `blur(${blurPx}px)` : 'none' }}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={endDrag}
