@@ -93,3 +93,28 @@ export function placeMachine(machine: Machine, type: MachineType): PlacedMachine
     })),
   };
 }
+
+export function machineCellMap(placed: PlacedMachine[]): Map<string, PlacedMachine> {
+  const map = new Map<string, PlacedMachine>();
+  for (const pm of placed) for (const [x, y] of pm.cells) map.set(cellKey(x, y), pm);
+  return map;
+}
+
+// Pixel-space line segments tracing the outer boundary of a set of grid cells
+// (used to outline a machine's footprint and, separately, a selection),
+// given the pixel size of one cell.
+export function perimeterSegments(cells: Cell[], cellPx: number): Array<[number, number, number, number]> {
+  const cellSet = new Set(cells.map(([x, y]) => cellKey(x, y)));
+  const segs: Array<[number, number, number, number]> = [];
+  for (const [x, y] of cells) {
+    for (let s = 0 as Side; s < 4; s = (s + 1) as Side) {
+      if (cellSet.has(cellKey(x + DX[s], y + DY[s]))) continue;
+      const x0 = x * cellPx + (s === 1 ? cellPx : 0);
+      const y0 = y * cellPx + (s === 2 ? cellPx : 0);
+      const x1 = x * cellPx + (s === 3 ? 0 : cellPx);
+      const y1 = y * cellPx + (s === 0 ? 0 : cellPx);
+      segs.push([x0, y0, x1, y1]);
+    }
+  }
+  return segs;
+}

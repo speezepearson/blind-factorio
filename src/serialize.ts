@@ -2,6 +2,11 @@ import { TYPE_BY_ID } from './machines';
 import type { Pump, World } from './types';
 
 // World <-> shareable code: JSON, deflated, base64.
+//
+// Known limitation, by design: only world *structure* is serialized (machines,
+// params, pumps). Sim fluid and per-machine internal state (e.g. a buffer's
+// contents) are not — importing re-runs prewarm() to regenerate flow, so a
+// buffer shared mid-drain arrives empty and refills naturally.
 
 interface WorldDocV1 {
   v: 1;

@@ -1,0 +1,278 @@
+import {
+  DX, DY, cellKey, machineCellMap, orientPath, parseKey, perimeterSegments, placeMachine,
+} from './geom';
+import type { PlacedMachine } from './geom';
+import { TYPE_BY_ID, paleTint, totalRate } from './machines';
+import { placeAll, pumpKey } from './sim';
+import type { SimState } from './sim';
+import { machinePlacementOk } from './clipboard';
+import type { Clipboard } from './clipboard';
+import type { Cell, Side, World } from './types';
+
+export const GRID_W = 170;
+export const GRID_H = 110;
+export const CELL = 6;
+
+export type Tool =
+  | { kind: 'pipe' }
+  | { kind: 'copy' }
+  | { kind: 'erase' }
+  | { kind: 'edit' }
+  | { kind: 'place'; typeId: string };
+
+export type DragState =
+  | { mode: 'pipe'; path: Cell[] }
+  | { mode: 'erase'; last: Cell }
+  | { mode: 'move'; machineId: number; grab: Cell; moved?: boolean } // grab = cursor offset from origin
+  | null;
+
+// Everything the draw code reads, gathered from the component's refs/state.
+export interface ViewState {
+  world: World;
+  sim: SimState;
+  godMode: boolean;
+  superSize: number;
+  copyCells: number; // the real copy region side in fine cells
+  tool: Tool;
+  hoverCell: Cell | null;
+  drag: DragState;
+  clipboard: Clipboard | null;
+  selectedId: number | null;
+  placeRotation: number;
+}
+
+export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const { world, sim } = view;
+  const placed = placeAll(world);
+  const occupied = machineCellMap(placed);
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#fbfaf7';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // players see only supercell boundaries; god mode also gets the fine grid
+  const S = view.superSize;
+  const strides: Array<[string, number]> = view.godMode
+    ? [['#f3f1ea', 1], ['#e0dcd2', S]]
+    : [['#e0dcd2', S]];
+  for (const [style, stride] of strides) {
+    ctx.strokeStyle = style;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x <= GRID_W; x += stride) {
+      ctx.moveTo(x * CELL + 0.5, 0);
+      ctx.lineTo(x * CELL + 0.5, GRID_H * CELL);
+    }
+    for (let y = 0; y <= GRID_H; y += stride) {
+      ctx.moveTo(0, y * CELL + 0.5);
+      ctx.lineTo(GRID_W * CELL, y * CELL + 0.5);
+    }
+    ctx.stroke();
+  }
+
+  const edgeMid = (x: number, y: number, s: Side): [number, number] => [
+    x * CELL + CELL / 2 + (DX[s] * CELL) / 2,
+    y * CELL + CELL / 2 + (DY[s] * CELL) / 2,
+  ];
+
+  const drawPumpBase = (x: number, y: number, alpha = 1) => {
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#e7e9ec';
+    ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    ctx.globalAlpha = 1;
+  };
+
+  const drawPumpArrow = (x: number, y: number, inSide: Side, outSide: Side, fluidColor: string | null, rate: number, alpha = 1) => {
+    ctx.globalAlpha = alpha;
+    const color = fluidColor ?? '#b3b8c0';
+    const [ix, iy] = edgeMid(x, y, inSide);
+    const [ox, oy] = edgeMid(x, y, outSide);
+    const cx = x * CELL + CELL / 2;
+    const cy = y * CELL + CELL / 2;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = fluidColor ? Math.min(4, 1.5 + 0.7 * Math.log2(1 + rate)) : 1.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(ix, iy);
+    ctx.lineTo(cx, cy);
+    ctx.lineTo(ox, oy);
+    ctx.stroke();
+    // arrowhead at the output edge
+    const adx = DX[outSide];
+    const ady = DY[outSide];
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(ox - adx * 3 - ady * 2, oy - ady * 3 + adx * 2);
+    ctx.lineTo(ox - adx * 3 + ady * 2, oy - ady * 3 - adx * 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  };
+
+  for (const [k, list] of world.pumps) {
+    const [x, y] = parseKey(k);
+    drawPumpBase(x, y);
+    for (const pump of list) {
+      const f = sim.pumpFluids.get(pumpKey(x, y, pump)) ?? null;
+      drawPumpArrow(x, y, pump.inSide, pump.outSide, f?.color ?? null, f?.rate ?? 0);
+    }
+  }
+
+  const drawMachine = (pm: PlacedMachine, alpha = 1, invalid = false) => {
+    const hidden = !view.godMode;
+    ctx.globalAlpha = alpha;
+    // a machine with a color param wears a pale tint of its configured color
+    const colorDef = pm.type.params?.find((pd) => pd.kind === 'color');
+    const paramColor = colorDef ? pm.machine.params?.[colorDef.key] ?? colorDef.default : null;
+    const body = typeof paramColor === 'string' ? paleTint(paramColor) : pm.type.bodyColor;
+    ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#dcd8cf' : body;
+    for (const [x, y] of pm.cells) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    // outline the perimeter
+    ctx.strokeStyle = '#4a4640';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (const [x0, y0, x1, y1] of perimeterSegments(pm.cells, CELL)) {
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+    }
+    ctx.stroke();
+
+    // ports: thick strokes along the boundary. When labels are hidden they
+    // become an anonymous thicker border; otherwise colored by kind.
+    const io = sim.machineIO.get(pm.machine.id);
+    for (const port of pm.ports) {
+      ctx.strokeStyle = hidden ? '#4a4640' : port.def.kind === 'in' ? '#2f7fd1' : '#e08a1e';
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'butt';
+      const inset = 2;
+      ctx.beginPath();
+      for (const [[x, y], s] of port.edges) {
+        if (s === 0) { ctx.moveTo(x * CELL, y * CELL + inset); ctx.lineTo(x * CELL + CELL, y * CELL + inset); }
+        if (s === 2) { ctx.moveTo(x * CELL, y * CELL + CELL - inset); ctx.lineTo(x * CELL + CELL, y * CELL + CELL - inset); }
+        if (s === 3) { ctx.moveTo(x * CELL + inset, y * CELL); ctx.lineTo(x * CELL + inset, y * CELL + CELL); }
+        if (s === 1) { ctx.moveTo(x * CELL + CELL - inset, y * CELL); ctx.lineTo(x * CELL + CELL - inset, y * CELL + CELL); }
+      }
+      ctx.stroke();
+      if (hidden) continue;
+
+      // label near the middle edge of the port
+      const [[lx, ly], ls] = port.edges[Math.floor((port.edges.length - 1) / 2)];
+      const [ex, ey] = edgeMid(lx, ly, ls);
+      ctx.fillStyle = '#333';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(port.def.label, ex - DX[ls] * 10, ey - DY[ls] * 10);
+
+      // live output rate floating just outside output ports
+      if (port.def.kind === 'out' && io) {
+        const rate = totalRate(io.outputs[port.def.id]);
+        if (rate > 1e-4) {
+          const colors = Object.keys(io.outputs[port.def.id] ?? {});
+          ctx.fillStyle = colors[0] ?? '#333';
+          ctx.font = 'bold 11px sans-serif';
+          ctx.fillText(rate.toFixed(2), ex + DX[ls] * 14, ey + DY[ls] * 14);
+        }
+      }
+    }
+
+    if (!hidden) {
+      // machine name at footprint center
+      const cxs = pm.cells.map(([x]) => x * CELL + CELL / 2);
+      const cys = pm.cells.map(([, y]) => y * CELL + CELL / 2);
+      ctx.fillStyle = '#2b2823';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(
+        pm.type.name,
+        cxs.reduce((a, b) => a + b, 0) / cxs.length,
+        cys.reduce((a, b) => a + b, 0) / cys.length,
+      );
+    }
+    ctx.globalAlpha = 1;
+  };
+
+  for (const pm of placed) drawMachine(pm);
+
+  // drag preview: pipe line
+  const drag = view.drag;
+  if (drag?.mode === 'pipe') {
+    for (const { cell, inSide, outSide } of orientPath(drag.path)) {
+      if (!occupied.has(cellKey(cell[0], cell[1]))) {
+        drawPumpBase(cell[0], cell[1], 0.55);
+        drawPumpArrow(cell[0], cell[1], inSide, outSide, null, 0, 0.55);
+      }
+    }
+  }
+
+  // copy/paste and erase previews — deliberately coarse: only supercells
+  // are highlighted, even though the real region is fine-grid-precise
+  const t = view.tool;
+  const hc = view.hoverCell;
+  if ((t.kind === 'copy' || t.kind === 'erase') && hc) {
+    const clip = t.kind === 'copy' ? view.clipboard : null;
+    const n = clip ? clip.size : view.copyCells;
+    const nSuper = Math.max(1, Math.round(n / S)); // square side, in supercells
+    const sx = Math.floor(hc[0] / S);
+    const sy = Math.floor(hc[1] / S);
+    const tlx = sx - Math.floor(nSuper / 2);
+    const tly = sy - Math.floor(nSuper / 2);
+    const [weak, strong, line] =
+      t.kind === 'erase'
+        ? ['rgba(214, 60, 60, 0.10)', 'rgba(214, 60, 60, 0.20)', '#d63c3c']
+        : clip
+          ? ['rgba(47, 127, 209, 0.14)', 'rgba(47, 127, 209, 0.22)', '#2f7fd1']
+          : ['rgba(74, 70, 64, 0.10)', 'rgba(74, 70, 64, 0.18)', '#4a4640'];
+    ctx.fillStyle = weak;
+    ctx.fillRect(tlx * S * CELL, tly * S * CELL, nSuper * S * CELL, nSuper * S * CELL);
+    // the supercell under the cursor, a shade stronger
+    ctx.fillStyle = strong;
+    ctx.fillRect(sx * S * CELL, sy * S * CELL, S * CELL, S * CELL);
+    if (clip?.snapshot) {
+      // ghost of what the copy-time supercell square looked like
+      ctx.globalAlpha = 0.55;
+      ctx.drawImage(clip.snapshot, tlx * S * CELL, tly * S * CELL, nSuper * S * CELL, nSuper * S * CELL);
+      ctx.globalAlpha = 1;
+    }
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(tlx * S * CELL + 0.5, tly * S * CELL + 0.5, nSuper * S * CELL, nSuper * S * CELL);
+    ctx.setLineDash([]);
+  }
+
+  // machine placement ghost (god mode)
+  if (t.kind === 'place' && hc && !drag) {
+    const ghost = placeMachine(
+      { id: -1, typeId: t.typeId, origin: hc, rotation: view.placeRotation },
+      TYPE_BY_ID[t.typeId],
+    );
+    drawMachine(ghost, 0.5, !machinePlacementOk(world, ghost));
+  }
+
+  // selection outline in edit mode
+  if (t.kind === 'edit' && view.selectedId !== null) {
+    const sel = placed.find((pm) => pm.machine.id === view.selectedId);
+    if (sel) {
+      ctx.strokeStyle = '#2f7fd1';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (const [x0, y0, x1, y1] of perimeterSegments(sel.cells, CELL)) {
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // hover highlight
+  if (hc && t.kind === 'pipe') {
+    ctx.strokeStyle = 'rgba(60,60,60,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(hc[0] * CELL + 1, hc[1] * CELL + 1, CELL - 2, CELL - 2);
+  }
+}
