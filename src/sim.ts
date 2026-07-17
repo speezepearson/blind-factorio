@@ -1,7 +1,7 @@
 import { DX, DY, cellKey, opposite, parseKey, placeMachine } from './geom';
 import type { PlacedMachine } from './geom';
 import { TYPE_BY_ID, dominant } from './machines';
-import type { Flow, FluidMap, Pump, Side, World } from './types';
+import type { Flow, FluidMap, ParamValue, Pump, Side, World } from './types';
 
 const EPS = 1e-4;
 const RATE_CAP = 1000;
@@ -55,7 +55,7 @@ export function step(world: World, prev: SimState): SimState {
       inputs[port.def.id] = fm;
     }
 
-    const params: Record<string, number> = {};
+    const params: Record<string, ParamValue> = {};
     for (const pd of pm.type.params ?? []) params[pd.key] = pd.default;
     Object.assign(params, pm.machine.params);
 

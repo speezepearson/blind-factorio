@@ -3,11 +3,11 @@ import {
   DX, DY, SIDE_NAMES, cellKey, mergePumps, orientPath, parseKey, placeMachine, rotateSide,
 } from './geom';
 import type { PlacedMachine } from './geom';
-import { FLUID_NAMES, TYPE_BY_ID, totalRate } from './machines';
+import { FLUID_NAMES, TYPE_BY_ID, paleTint, totalRate } from './machines';
 import { emptySim, placeAll, pumpKey, step } from './sim';
 import type { SimState } from './sim';
 import { buildStarterWorld } from './starter';
-import type { Cell, FluidMap, Machine, Pump, Side, World } from './types';
+import type { Cell, FluidMap, Machine, ParamValue, Pump, Side, World } from './types';
 import './App.css';
 
 const GRID_W = 170;
@@ -21,7 +21,7 @@ type Hover = { kind: 'machine'; machineId: number } | { kind: 'pump'; key: strin
 
 interface Clipboard {
   size: number;
-  machines: Array<{ typeId: string; rotation: number; rel: Cell; params?: Record<string, number> }>;
+  machines: Array<{ typeId: string; rotation: number; rel: Cell; params?: Record<string, ParamValue> }>;
   pumps: Array<{ rel: Cell; pump: Pump }>;
   // visual snapshot of the supercell square highlighted at copy time (which is
   // not exactly the copied fine-grid region) — shown as the paste ghost
@@ -369,7 +369,11 @@ export default function App() {
       const hidden = hideLabelsRef.current;
       ctx.globalAlpha = alpha;
       const cellSet = new Set(pm.cells.map(([x, y]) => cellKey(x, y)));
-      ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#dcd8cf' : pm.type.bodyColor;
+      // a machine with a color param wears a pale tint of its configured color
+      const colorDef = pm.type.params?.find((pd) => pd.kind === 'color');
+      const paramColor = colorDef ? pm.machine.params?.[colorDef.key] ?? colorDef.default : null;
+      const body = typeof paramColor === 'string' ? paleTint(paramColor) : pm.type.bodyColor;
+      ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#dcd8cf' : body;
       for (const [x, y] of pm.cells) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
       // outline the perimeter
       ctx.strokeStyle = '#4a4640';
@@ -637,20 +641,29 @@ export default function App() {
           ) : (
             defs.map((pd) => {
               const value = machine.params?.[pd.key] ?? pd.default;
+              const set = (v: ParamValue) => {
+                machine.params = { ...machine.params, [pd.key]: v };
+                setTick((t) => t + 1);
+              };
               return (
                 <label key={pd.key} className="param">
-                  {pd.label}: <b>{value}</b>
-                  <input
-                    type="range"
-                    min={pd.min}
-                    max={pd.max}
-                    step={pd.step}
-                    value={value}
-                    onChange={(e) => {
-                      machine.params = { ...machine.params, [pd.key]: Number(e.target.value) };
-                      setTick((t) => t + 1);
-                    }}
-                  />
+                  {pd.label}: <b>{String(value)}</b>
+                  {pd.kind === 'color' ? (
+                    <input
+                      type="color"
+                      value={String(value)}
+                      onChange={(e) => set(e.target.value)}
+                    />
+                  ) : (
+                    <input
+                      type="range"
+                      min={pd.min}
+                      max={pd.max}
+                      step={pd.step}
+                      value={Number(value)}
+                      onChange={(e) => set(Number(e.target.value))}
+                    />
+                  )}
                 </label>
               );
             })

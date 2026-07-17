@@ -21,14 +21,18 @@ export interface PortDef {
   edges: Edge[];
 }
 
-// A tunable per-machine-instance parameter, e.g. a spring's production rate.
+// A tunable per-machine-instance parameter, e.g. a spring's production rate
+// (kind 'number') or its fluid color (kind 'color', a hex string).
+export type ParamValue = number | string;
+
 export interface ParamDef {
   key: string;
   label: string;
-  default: number;
-  min: number;
-  max: number;
-  step: number;
+  kind: 'number' | 'color';
+  default: ParamValue;
+  min?: number;
+  max?: number;
+  step?: number;
 }
 
 export interface MachineType {
@@ -39,7 +43,7 @@ export interface MachineType {
   ports: PortDef[];
   params?: ParamDef[];
   ruleText: string;
-  compute: (inputs: Record<string, FluidMap>, params: Record<string, number>) => Record<string, FluidMap>;
+  compute: (inputs: Record<string, FluidMap>, params: Record<string, ParamValue>) => Record<string, FluidMap>;
 }
 
 export interface Machine {
@@ -47,7 +51,7 @@ export interface Machine {
   typeId: string;
   origin: Cell; // top-left of the rotated footprint's bounding box
   rotation: number; // quarter-turns clockwise, 0..3
-  params?: Record<string, number>; // overrides of the type's param defaults
+  params?: Record<string, ParamValue>; // overrides of the type's param defaults
 }
 
 export interface Pump {

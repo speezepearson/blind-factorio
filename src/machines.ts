@@ -66,30 +66,31 @@ function scaleEdges(edges: Edge[]): Edge[] {
   });
 }
 
+// Pale version of a fluid color, used to tint a spring's body by its output.
+export function paleTint(hex: string): string {
+  const parse = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const toHex = (n: number) => Math.round(n).toString(16).padStart(2, '0');
+  const [r, g, b] = parse(hex);
+  return `#${toHex(r + (255 - r) * 0.72)}${toHex(g + (255 - g) * 0.72)}${toHex(b + (255 - b) * 0.72)}`;
+}
+
 export const MACHINE_TYPES: MachineType[] = [
   {
-    id: 'red-spring',
-    name: 'Red Spring',
+    id: 'spring',
+    name: 'Spring',
     bodyColor: '#f0c9c9',
     cells: scaleCells([[0, 0], [1, 0], [0, 1], [1, 1]]),
     ports: [
       { id: 'out', label: 'A', kind: 'out', edges: scaleEdges([[[0, 0], 0], [[1, 0], 0]]) },
     ],
-    params: [{ key: 'rate', label: 'Production rate (L/s)', default: 2, min: 0, max: 10, step: 0.1 }],
-    ruleText: 'Produces red fluid at port A at its configured rate (default 2 L/s). Needs no inputs.',
-    compute: (_inputs, params) => ({ out: { [RED]: params.rate } }),
-  },
-  {
-    id: 'green-spring',
-    name: 'Green Spring',
-    bodyColor: '#c9e5cb',
-    cells: scaleCells([[0, 0], [1, 0], [0, 1], [1, 1]]),
-    ports: [
-      { id: 'out', label: 'A', kind: 'out', edges: scaleEdges([[[0, 0], 0], [[1, 0], 0]]) },
+    params: [
+      { key: 'rate', label: 'Production rate (L/s)', kind: 'number', default: 2, min: 0, max: 10, step: 0.1 },
+      { key: 'color', label: 'Fluid color', kind: 'color', default: RED },
     ],
-    params: [{ key: 'rate', label: 'Production rate (L/s)', default: 2, min: 0, max: 10, step: 0.1 }],
-    ruleText: 'Produces green fluid at port A at its configured rate (default 2 L/s). Needs no inputs.',
-    compute: (_inputs, params) => ({ out: { [GREEN]: params.rate } }),
+    ruleText:
+      'Produces fluid of its configured color at its configured rate at port A ' +
+      '(defaults: red, 2 L/s). Needs no inputs.',
+    compute: (_inputs, params) => ({ out: { [String(params.color)]: Number(params.rate) } }),
   },
   {
     id: 'reactor',

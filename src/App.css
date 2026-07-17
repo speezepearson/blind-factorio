@@ -132,6 +132,12 @@ canvas {
   margin-top: 4px;
 }
 
+.panel .param input[type='color'] {
+  width: 56px;
+  height: 30px;
+  padding: 0;
+}
+
 .dim {
   color: #999;
 }

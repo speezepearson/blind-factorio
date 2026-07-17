@@ -1,5 +1,6 @@
 import { cellKey, mergePumps, orientPath } from './geom';
-import type { Cell, World } from './types';
+import { GREEN } from './machines';
+import type { Cell, ParamValue, World } from './types';
 
 // Walk axis-aligned segments between waypoints, returning every cell passed.
 function pathThrough(waypoints: Cell[]): Cell[] {
@@ -19,8 +20,8 @@ function pathThrough(waypoints: Cell[]): Cell[] {
 // output passes through one funnel and merges with more green in a second.
 export function buildStarterWorld(w: number, h: number): World {
   const world: World = { w, h, pumps: new Map(), machines: [], nextMachineId: 1 };
-  const add = (typeId: string, origin: Cell, rotation = 0) => {
-    world.machines.push({ id: world.nextMachineId++, typeId, origin, rotation });
+  const add = (typeId: string, origin: Cell, params?: Record<string, ParamValue>) => {
+    world.machines.push({ id: world.nextMachineId++, typeId, origin, rotation: 0, params });
   };
   const pipe = (...waypoints: Cell[]) => {
     for (const { cell, inSide, outSide } of orientPath(pathThrough(waypoints))) {
@@ -29,8 +30,8 @@ export function buildStarterWorld(w: number, h: number): World {
     }
   };
 
-  add('red-spring', [20, 30]);
-  add('green-spring', [55, 30]);
+  add('spring', [20, 30]); // red by default
+  add('spring', [55, 30], { color: GREEN });
   add('reactor', [38, 58]);
   add('funnel', [70, 40]);
   add('funnel', [100, 60]);
