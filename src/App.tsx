@@ -71,7 +71,7 @@ function rotateClipboard(clip: Clipboard): Clipboard {
 // Pre-run the sim so a fresh or imported world is already flowing.
 function prewarm(world: World): SimState {
   let sim = emptySim();
-  for (let i = 0; i < 400; i++) sim = step(world, sim);
+  for (let i = 0; i < 400; i++) sim = step(world, sim, TICK_MS / 1000);
   return sim;
 }
 
@@ -562,7 +562,7 @@ export default function App() {
 
   useEffect(() => {
     const iv = setInterval(() => {
-      simRef.current = step(worldRef.current, simRef.current);
+      simRef.current = step(worldRef.current, simRef.current, TICK_MS / 1000);
       setTick((t) => t + 1);
       draw();
     }, TICK_MS);
@@ -763,6 +763,11 @@ export default function App() {
         <>
           <h2>{pm.type.name}</h2>
           <p className="rule">{pm.type.ruleText}</p>
+          {pm.type.describeState && (
+            <p className="rule">
+              <b>{pm.type.describeState(sim.machineStates.get(machine.id) ?? {})}</b>
+            </p>
+          )}
           <table>
             <tbody>
               {pm.ports.map((port) => (

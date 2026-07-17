@@ -12,9 +12,14 @@ export const pumpKey = (x: number, y: number, p: Pump) => `${x},${y}#${p.inSide}
 export interface SimState {
   pumpFluids: Map<string, Flow | null>; // keyed by pumpKey
   machineIO: Map<number, { inputs: Record<string, FluidMap>; outputs: Record<string, FluidMap> }>;
+  machineStates: Map<number, Record<string, unknown>>; // per-machine persistent state
 }
 
-export const emptySim = (): SimState => ({ pumpFluids: new Map(), machineIO: new Map() });
+export const emptySim = (): SimState => ({
+  pumpFluids: new Map(),
+  machineIO: new Map(),
+  machineStates: new Map(),
+});
 
 export const placeAll = (world: World): PlacedMachine[] =>
   world.machines.map((m) => placeMachine(m, TYPE_BY_ID[m.typeId]));
@@ -26,7 +31,7 @@ function addFluid(into: FluidMap, color: string, rate: number) {
 // One synchronous propagation step. Machine port inputs are read from last
 // tick's pump contents; machine outputs are recomputed and immediately visible
 // to pumps drawing from them; pump-to-pump flow advances one cell per tick.
-export function step(world: World, prev: SimState): SimState {
+export function step(world: World, prev: SimState, dt = 0.11): SimState {
   const placed = placeAll(world);
   const pumpsAt = (x: number, y: number): Pump[] => world.pumps.get(cellKey(x, y)) ?? [];
   // The pump in a cell currently pushing out of the given side, if any.
@@ -35,6 +40,8 @@ export function step(world: World, prev: SimState): SimState {
     pumpsAt(x, y).find((p) => p.outSide === side);
 
   const machineIO: SimState['machineIO'] = new Map();
+  // carry forward state for machines that still exist (dropping the rest)
+  const machineStates: SimState['machineStates'] = new Map();
   // Machine-boundary edges that currently emit fluid, keyed "x,y,side",
   // with how many pumps are drawing from that port (output is split evenly).
   const emitting = new Map<string, { fluids: FluidMap; consumers: number }>();
@@ -59,9 +66,12 @@ export function step(world: World, prev: SimState): SimState {
     for (const pd of pm.type.params ?? []) params[pd.key] = pd.default;
     Object.assign(params, pm.machine.params);
 
+    const state = prev.machineStates.get(pm.machine.id) ?? {};
+    machineStates.set(pm.machine.id, state);
+
     let outputs: Record<string, FluidMap>;
     try {
-      outputs = pm.type.compute(inputs, params) ?? {};
+      outputs = pm.type.compute(inputs, params, { dt, state }) ?? {};
     } catch {
       outputs = {};
     }
@@ -110,5 +120,5 @@ export function step(world: World, prev: SimState): SimState {
     }
   }
 
-  return { pumpFluids, machineIO };
+  return { pumpFluids, machineIO, machineStates };
 }

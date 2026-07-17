@@ -180,6 +180,58 @@ export const MACHINE_TYPES: MachineType[] = [
       };
     },
   },
+  {
+    id: 'buffer',
+    name: 'Buffer',
+    bodyColor: '#cbd7e3',
+    cells: scaleCells([[0, 0], [1, 0], [0, 1], [1, 1]]),
+    ports: [
+      { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3], [[0, 1], 3]]) },
+      { id: 'out', label: 'B', kind: 'out', edges: scaleEdges([[[1, 0], 1], [[1, 1], 1]]) },
+    ],
+    params: [
+      { key: 'capacity', label: 'Capacity (L)', kind: 'number', default: 20, min: 1, max: 100, step: 1 },
+      { key: 'drainRate', label: 'Drain rate (L/s)', kind: 'number', default: 10, min: 0.5, max: 50, step: 0.5 },
+    ],
+    ruleText:
+      'Accepts fluid at port A, remembering everything it takes in, until it holds ' +
+      'capacity liters. Then it stops accepting and dumps its contents — blended into ' +
+      'one color — out port B at its drain rate until empty, whereupon it starts ' +
+      'accepting again.',
+    compute: (inputs, params, ctx): Record<string, FluidMap> => {
+      const st = ctx.state as { stored?: FluidMap; draining?: boolean };
+      const stored = (st.stored ??= {});
+      const capacity = Math.max(0.1, Number(params.capacity));
+
+      if (!st.draining) {
+        for (const [color, rate] of Object.entries(inputs.in ?? {})) {
+          stored[color] = (stored[color] ?? 0) + rate * ctx.dt;
+        }
+        if (totalRate(stored) >= capacity) st.draining = true;
+        return {};
+      }
+
+      const held = totalRate(stored);
+      if (held <= 1e-6) {
+        st.stored = {};
+        st.draining = false;
+        return {};
+      }
+      const rate = Math.min(Math.max(0, Number(params.drainRate)), held / ctx.dt);
+      const color = weightedMix(stored);
+      const keep = 1 - (rate * ctx.dt) / held;
+      for (const k of Object.keys(stored)) {
+        stored[k] *= keep;
+        if (stored[k] <= 1e-9) delete stored[k];
+      }
+      return { out: { [color]: rate } };
+    },
+    describeState: (state) => {
+      const stored = (state.stored as FluidMap | undefined) ?? {};
+      const held = totalRate(stored);
+      return `Holding ${held.toFixed(1)} L, ${state.draining ? 'draining' : 'filling'}.`;
+    },
+  },
 ];
 
 export const TYPE_BY_ID: Record<string, MachineType> = Object.fromEntries(

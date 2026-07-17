@@ -35,6 +35,14 @@ export interface ParamDef {
   step?: number;
 }
 
+// Passed to compute() each tick: elapsed sim time and a persistent, mutable
+// per-machine-instance scratch object (empty for a fresh machine). Stateless
+// machines simply ignore it.
+export interface ComputeCtx {
+  dt: number; // seconds of sim time this tick
+  state: Record<string, unknown>;
+}
+
 export interface MachineType {
   id: string;
   name: string;
@@ -43,7 +51,13 @@ export interface MachineType {
   ports: PortDef[];
   params?: ParamDef[];
   ruleText: string;
-  compute: (inputs: Record<string, FluidMap>, params: Record<string, ParamValue>) => Record<string, FluidMap>;
+  compute: (
+    inputs: Record<string, FluidMap>,
+    params: Record<string, ParamValue>,
+    ctx: ComputeCtx,
+  ) => Record<string, FluidMap>;
+  // optional one-line live summary of the machine's internal state
+  describeState?: (state: Record<string, unknown>) => string;
 }
 
 export interface Machine {
