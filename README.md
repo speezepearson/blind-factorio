@@ -39,15 +39,17 @@ npm run lint    # oxlint
 | File | Job |
 |---|---|
 | `src/types.ts` | Core data types: World, Machine, MachineType, ports, params, pumps. |
-| `src/geom.ts` | Grid geometry: sides, rotation, machine placement, pump path orientation, pump merging. |
+| `src/geom.ts` | Grid constants (`GRID_W`/`GRID_H`/`CELL`) and geometry: sides, rotation, machine placement, pump path orientation, pump merging. |
 | `src/machines.ts` | The machine-type catalog + color math. **To add a machine type, append one object here** — shape (coarse cells via `scaleCells`), ports, editable params, `compute`, optional `describeState`. Everything else (placement, rendering, editing, serialization) picks it up automatically. |
 | `src/sim.ts` | The tick function. Owns per-machine persistent state (`ComputeCtx.state`) for stateful machines. |
 | `src/starter.ts` | The pre-built demo factory the app boots into. |
 | `src/serialize.ts` | World ↔ URL-safe base64 deflated JSON, for Export/Import/`#world=` links. |
 | `src/App.tsx` | The UI shell: tools, mouse handling, undo/redo, world sharing. |
+| `src/warp.ts` | How we lie to the player: warp noise, the tool-square edge warp, the lake compositor, and the `Obscura` settings bundle. |
 | `src/render.ts` | Canvas rendering of the world + tool overlays. |
 | `src/clipboard.ts` | Copy/paste/rotate of world regions. |
 | `src/Panel.tsx` | The inspector/help side panel. |
+| `src/LakeEditor.tsx` | The god-mode table for editing lake ripple layers. |
 
 ## UI architecture (read before touching App.tsx)
 
@@ -82,7 +84,8 @@ Two views of the same world:
 
 Export/Share serialize the world *structure* (machines + params + pumps). Sim fluid and
 machine internal state (e.g. a buffer's contents) are intentionally not serialized —
-import re-runs 400 warm-up ticks (`prewarm`) instead. World codes decode from either
+import re-runs 400 warm-up ticks (`prewarm`) instead. View config (god mode, the
+`Obscura` blur/warp/lake settings) is also deliberately not part of world codes. World codes decode from either
 base64 alphabet; links look like `https://blind-factorio.exe.xyz/#world=<code>`.
 
 ## Verifying changes

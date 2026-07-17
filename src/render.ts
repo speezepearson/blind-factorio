@@ -1,5 +1,5 @@
 import {
-  DX, DY, cellKey, machineCellMap, orientPath, parseKey, perimeterSegments, placeMachine,
+  CELL, DX, DY, GRID_H, GRID_W, cellKey, machineCellMap, orientPath, parseKey, perimeterSegments, placeMachine,
 } from './geom';
 import type { PlacedMachine } from './geom';
 import { SCALE, TYPE_BY_ID, paleTint, totalRate } from './machines';
@@ -7,176 +7,9 @@ import { placeAll, pumpKey } from './sim';
 import type { SimState } from './sim';
 import { machinePlacementOk, squareTL } from './clipboard';
 import type { Clipboard } from './clipboard';
+import { traceWarpedRect } from './warp';
+import type { Obscura } from './warp';
 import type { Cell, Side, World } from './types';
-
-export const GRID_W = 170;
-export const GRID_H = 110;
-export const CELL = 6;
-
-// --- warp noise ---------------------------------------------------------------
-// Smooth value noise anchored to map pixels. Outside god mode the tool square
-// is drawn through a fixed slice of this field, so its apparent shape undulates
-// as it moves across the world; the whole map view is composited through a
-// slowly time-evolving slice (the "lake" effect). Purely cosmetic — the real
-// region stays a square and the world itself never moves.
-
-function latticeHash(ix: number, iy: number, iz: number, seed: number): number {
-  let h = (Math.imul(ix, 0x27d4eb2d) ^ Math.imul(iy, 0x165667b1) ^ Math.imul(iz, 0x9e3779b1) ^ seed) >>> 0;
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-  return ((h ^ (h >>> 16)) >>> 0) / 0xffffffff;
-}
-
-// 2D slice at integer time iz
-function valueNoise(x: number, y: number, iz: number, seed: number): number {
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const fx = x - ix;
-  const fy = y - iy;
-  const sx = fx * fx * (3 - 2 * fx);
-  const sy = fy * fy * (3 - 2 * fy);
-  const a = latticeHash(ix, iy, iz, seed);
-  const b = latticeHash(ix + 1, iy, iz, seed);
-  const c = latticeHash(ix, iy + 1, iz, seed);
-  const d = latticeHash(ix + 1, iy + 1, iz, seed);
-  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
-}
-
-// A lattice corner's value over time: Catmull-Rom through its own hashed
-// keyframe sequence, on its own hashed phase-shifted clock. Both matter:
-// smoothstep between two keyframes has zero velocity at every keyframe, and
-// with a shared clock the whole field would visibly freeze in sync once per
-// 1/speed seconds. Catmull-Rom keeps velocity nonzero through keyframes, and
-// the per-corner phase means no two corners hit keyframes together anyway.
-function cornerWave(ix: number, iy: number, z: number, seed: number): number {
-  const zc = z + latticeHash(ix, iy, 0, seed ^ 0x5bf03635);
-  const i = Math.floor(zc);
-  const f = zc - i;
-  const p0 = latticeHash(ix, iy, i - 1, seed);
-  const p1 = latticeHash(ix, iy, i, seed);
-  const p2 = latticeHash(ix, iy, i + 1, seed);
-  const p3 = latticeHash(ix, iy, i + 2, seed);
-  return p1 + 0.5 * f * (p2 - p0 + f * (2 * p0 - 5 * p1 + 4 * p2 - p3 + f * (3 * (p1 - p2) + p3 - p0)));
-}
-
-// displacement (in px) of the static tool-square warp field at map-pixel (px, py)
-function warpOffset(px: number, py: number, ampPx: number, scalePx: number): [number, number] {
-  return [
-    (valueNoise(px / scalePx, py / scalePx, 0, 0x9e3779b9) * 2 - 1) * ampPx,
-    (valueNoise(px / scalePx, py / scalePx, 0, 0x7f4a7c15) * 2 - 1) * ampPx,
-  ];
-}
-
-// One layer of the lake: an independent noise field with its own feature
-// size, displacement amplitude, evolution rate, and a directional drift that
-// makes its ripples travel across the map.
-export interface LakeLayer {
-  waveDir: number; // degrees; direction the ripples travel
-  waveSpeed: number; // drift speed, cells per second
-  magnitude: number; // displacement amplitude, cells
-  wavelength: number; // feature size, cells
-  timeScale: number; // pattern renewals per second
-}
-
-export const lakeIsStill = (layers: LakeLayer[]): boolean =>
-  layers.every((l) => l.magnitude <= 0 || l.wavelength <= 0);
-
-// Composite `src` onto `dst` through the time-varying lake field (the sum of
-// all layers): each small tile of the destination samples the source
-// displaced by the field at that spot, like looking at the map through the
-// surface of a lake.
-const LAKE_TILE = 2 * CELL; // px; small vs. the field's feature size, so seams stay sub-blur
-
-export function drawLakeWarped(
-  dst: HTMLCanvasElement, src: HTMLCanvasElement, tSec: number, layers: LakeLayer[],
-): void {
-  const ctx = dst.getContext('2d');
-  if (!ctx) return;
-  const w = src.width;
-  const h = src.height;
-  const prep = layers
-    .filter((l) => l.magnitude > 0 && l.wavelength > 0)
-    .map((l, li) => {
-      const rad = (l.waveDir * Math.PI) / 180;
-      return {
-        ampPx: l.magnitude * CELL,
-        scalePx: l.wavelength * CELL,
-        // sampling the field shifted by -t·v makes the pattern drift toward waveDir
-        ox: -tSec * l.waveSpeed * Math.cos(rad) * CELL,
-        oy: -tSec * l.waveSpeed * Math.sin(rad) * CELL,
-        z: tSec * l.timeScale,
-        seedX: 0x51ab3e97 ^ Math.imul(li + 1, 0x9e3779b9),
-        seedY: 0x2c1b3c6d ^ Math.imul(li + 1, 0x85ebca6b),
-        // corner values repeat across many tiles; compute each once per frame
-        corners: new Map<number, [number, number]>(),
-      };
-    });
-  type Prep = (typeof prep)[number];
-  const cornerVec = (p: Prep, ix: number, iy: number): [number, number] => {
-    const key = ix * 0x10000 + iy;
-    let v = p.corners.get(key);
-    if (!v) {
-      v = [cornerWave(ix, iy, p.z, p.seedX), cornerWave(ix, iy, p.z, p.seedY)];
-      p.corners.set(key, v);
-    }
-    return v;
-  };
-  for (let y = 0; y < h; y += LAKE_TILE) {
-    for (let x = 0; x < w; x += LAKE_TILE) {
-      let dx = 0;
-      let dy = 0;
-      for (const p of prep) {
-        const nx = (x + LAKE_TILE / 2 + p.ox) / p.scalePx;
-        const ny = (y + LAKE_TILE / 2 + p.oy) / p.scalePx;
-        const ix = Math.floor(nx);
-        const iy = Math.floor(ny);
-        const fx = nx - ix;
-        const fy = ny - iy;
-        const sxw = fx * fx * (3 - 2 * fx);
-        const syw = fy * fy * (3 - 2 * fy);
-        const a = cornerVec(p, ix, iy);
-        const b = cornerVec(p, ix + 1, iy);
-        const c = cornerVec(p, ix, iy + 1);
-        const d = cornerVec(p, ix + 1, iy + 1);
-        const blend = (ch: 0 | 1) =>
-          a[ch] + (b[ch] - a[ch]) * sxw + (c[ch] - a[ch]) * syw + (a[ch] - b[ch] - c[ch] + d[ch]) * sxw * syw;
-        dx += (blend(0) * 2 - 1) * p.ampPx;
-        dy += (blend(1) * 2 - 1) * p.ampPx;
-      }
-      const sx = Math.max(0, Math.min(w - LAKE_TILE, x + dx));
-      const sy = Math.max(0, Math.min(h - LAKE_TILE, y + dy));
-      ctx.drawImage(src, sx, sy, LAKE_TILE, LAKE_TILE, x, y, LAKE_TILE, LAKE_TILE);
-    }
-  }
-}
-
-// Set the current path to the rect with its perimeter displaced through the
-// warp field, sampled every few px so the wobble stays smooth.
-function traceWarpedRect(
-  ctx: CanvasRenderingContext2D,
-  x: number, y: number, w: number, h: number,
-  ampPx: number, scalePx: number,
-): void {
-  const corners: Array<[number, number]> = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
-  ctx.beginPath();
-  let first = true;
-  for (let i = 0; i < 4; i++) {
-    const [ax, ay] = corners[i];
-    const [bx, by] = corners[(i + 1) % 4];
-    const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 4));
-    for (let s = 0; s < steps; s++) {
-      const t = s / steps;
-      const px = ax + (bx - ax) * t;
-      const py = ay + (by - ay) * t;
-      const [dx, dy] = warpOffset(px, py, ampPx, scalePx);
-      if (first) {
-        ctx.moveTo(px + dx, py + dy);
-        first = false;
-      } else ctx.lineTo(px + dx, py + dy);
-    }
-  }
-  ctx.closePath();
-}
 
 export type Tool =
   | { kind: 'pipe' }
@@ -196,9 +29,7 @@ export interface ViewState {
   world: World;
   sim: SimState;
   godMode: boolean;
-  toolBlur: number; // blur radius on the copy/erase square outside god mode, in cells
-  warpAmp: number; // how far the square's drawn edges wander outside god mode, in cells
-  warpScale: number; // feature size of the warp field, in cells
+  obscura: Obscura;
   copyCells: number; // the copy region side in fine cells
   tool: Tool;
   hoverCell: Cell | null;
@@ -393,10 +224,10 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
           ? ['rgba(47, 127, 209, 0.16)', '#2f7fd1']
           : ['rgba(74, 70, 64, 0.13)', '#4a4640'];
     ctx.save();
-    if (!view.godMode && view.toolBlur > 0) ctx.filter = `blur(${view.toolBlur * CELL}px)`;
-    const ampPx = view.godMode ? 0 : view.warpAmp * CELL;
+    if (!view.godMode && view.obscura.toolBlur > 0) ctx.filter = `blur(${view.obscura.toolBlur * CELL}px)`;
+    const ampPx = view.godMode ? 0 : view.obscura.warpAmp * CELL;
     if (ampPx > 0) {
-      traceWarpedRect(ctx, tlx * CELL, tly * CELL, n * CELL, n * CELL, ampPx, view.warpScale * CELL);
+      traceWarpedRect(ctx, tlx * CELL, tly * CELL, n * CELL, n * CELL, ampPx, view.obscura.warpScale * CELL);
     } else {
       ctx.beginPath();
       ctx.rect(tlx * CELL + 0.5, tly * CELL + 0.5, n * CELL, n * CELL);

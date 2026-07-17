@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  cellKey, machineCellMap, mergePumps, orientPath, parseKey, placeMachine,
+  CELL, GRID_H, GRID_W, cellKey, machineCellMap, mergePumps, orientPath, parseKey, placeMachine,
 } from './geom';
 import { MACHINE_TYPES, TYPE_BY_ID } from './machines';
 import { emptySim, placeAll, step } from './sim';
@@ -12,10 +12,13 @@ import {
   captureRegion, machinePlacementOk, pasteClipboard, rotateClipboard, squareTL,
 } from './clipboard';
 import type { Clipboard } from './clipboard';
-import { CELL, GRID_H, GRID_W, drawLakeWarped, drawWorld, lakeIsStill } from './render';
-import type { DragState, LakeLayer, Tool, ViewState } from './render';
+import { DEFAULT_OBSCURA, drawLakeWarped, lakeIsStill } from './warp';
+import type { Obscura } from './warp';
+import { drawWorld } from './render';
+import type { DragState, Tool, ViewState } from './render';
 import { Panel } from './Panel';
 import type { Hover } from './Panel';
+import { LakeEditor } from './LakeEditor';
 import './App.css';
 
 const TICK_MS = 110;
@@ -34,19 +37,23 @@ function freshWorld(): { world: World; sim: SimState } {
 
 const hoverKey = (h: Hover): string => (h === null ? '' : h.kind === 'machine' ? `m${h.machineId}` : `p${h.key}`);
 
-// the lake: a big slow swell plus small quick ripples, drifting different ways
-const DEFAULT_LAKE: LakeLayer[] = [
-  { waveDir: 20, waveSpeed: 1, magnitude: 1, wavelength: 18, timeScale: 0.8 },
-  { waveDir: 20, waveSpeed: 2.5, magnitude: 1, wavelength: 7, timeScale: 1.2 },
-];
-
-const LAKE_FIELDS: Array<{ key: keyof LakeLayer; label: string; min: number; max: number; step: number }> = [
-  { key: 'waveDir', label: 'dir °', min: 0, max: 360, step: 5 },
-  { key: 'waveSpeed', label: 'speed c/s', min: 0, max: 10, step: 0.5 },
-  { key: 'magnitude', label: 'magnitude c', min: 0, max: 5, step: 0.25 },
-  { key: 'wavelength', label: 'wavelength c', min: 2, max: 60, step: 1 },
-  { key: 'timeScale', label: 'time scale /s', min: 0, max: 3, step: 0.1 },
-];
+function Slider({ label, title, min, max, step, value, onChange }: {
+  label: string; title?: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void;
+}) {
+  return (
+    <label className="slider" title={title}>
+      {label}
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </label>
+  );
+}
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -61,11 +68,7 @@ export default function App() {
   // editing. Off (the default) = the player's obscured view: anonymous
   // machines + blur.
   const [godMode, setGodMode] = useState(false);
-  const [blurPx, setBlurPx] = useState(3); // whole-canvas Gaussian blur outside god mode
-  const [toolBlur, setToolBlur] = useState(2); // blur on the copy/erase square outside god mode, in cells
-  const [warpAmp, setWarpAmp] = useState(2); // how far the square's drawn edges wander, in cells
-  const [warpScale, setWarpScale] = useState(10); // feature size of the warp field, in cells
-  const [lakeLayers, setLakeLayers] = useState<LakeLayer[]>(DEFAULT_LAKE);
+  const [obscura, setObscura] = useState<Obscura>(DEFAULT_OBSCURA);
   const [placeRotation, setPlaceRotation] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hover, setHover] = useState<Hover>(null);
@@ -75,14 +78,8 @@ export default function App() {
   toolRef.current = tool;
   const copySizeRef = useRef(copySize);
   copySizeRef.current = copySize;
-  const toolBlurRef = useRef(toolBlur);
-  toolBlurRef.current = toolBlur;
-  const warpAmpRef = useRef(warpAmp);
-  warpAmpRef.current = warpAmp;
-  const warpScaleRef = useRef(warpScale);
-  warpScaleRef.current = warpScale;
-  const lakeLayersRef = useRef(lakeLayers);
-  lakeLayersRef.current = lakeLayers;
+  const obscuraRef = useRef(obscura);
+  obscuraRef.current = obscura;
   const clipboardRef = useRef(clipboard);
   clipboardRef.current = clipboard;
   const godModeRef = useRef(godMode);
@@ -239,10 +236,10 @@ export default function App() {
   const composite = () => {
     const cv = canvasRef.current;
     if (!cv) return;
-    if (godModeRef.current || lakeIsStill(lakeLayersRef.current)) {
+    if (godModeRef.current || lakeIsStill(obscuraRef.current.lakeLayers)) {
       cv.getContext('2d')!.drawImage(worldCanvas(), 0, 0);
     } else {
-      drawLakeWarped(cv, worldCanvas(), performance.now() / 1000, lakeLayersRef.current);
+      drawLakeWarped(cv, worldCanvas(), performance.now() / 1000, obscuraRef.current.lakeLayers);
     }
   };
 
@@ -251,9 +248,7 @@ export default function App() {
       world: worldRef.current,
       sim: simRef.current,
       godMode: godModeRef.current,
-      toolBlur: toolBlurRef.current,
-      warpAmp: warpAmpRef.current,
-      warpScale: warpScaleRef.current,
+      obscura: obscuraRef.current,
       copyCells: copySizeRef.current,
       tool: toolRef.current,
       hoverCell: hoverCellRef.current,
@@ -321,7 +316,7 @@ export default function App() {
   useEffect(() => {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [godMode, clipboard, tool, copySize, toolBlur, warpAmp, warpScale, selectedId, placeRotation]);
+  }, [godMode, clipboard, tool, copySize, obscura, selectedId, placeRotation]);
 
   // ---- mouse handlers ----------------------------------------------------
 
@@ -506,17 +501,14 @@ export default function App() {
         <button className={tool.kind === 'copy' ? 'active' : ''} onClick={() => setTool({ kind: 'copy' })}>
           Copy/paste
         </button>
-        <label className="slider">
-          {copySize}×{copySize}
-          <input
-            type="range"
-            min={5}
-            max={45}
-            step={2}
-            value={copySize}
-            onChange={(e) => setCopySize(Number(e.target.value))}
-          />
-        </label>
+        <Slider
+          label={`${copySize}×${copySize}`}
+          min={5}
+          max={45}
+          step={2}
+          value={copySize}
+          onChange={setCopySize}
+        />
         <button className={tool.kind === 'erase' ? 'active' : ''} onClick={() => setTool({ kind: 'erase' })}>
           Erase
         </button>
@@ -547,50 +539,42 @@ export default function App() {
         <span className="spacer" />
         {godMode && (
           <>
-            <label className="slider" title="Gaussian blur applied outside god mode">
-              Blur: {blurPx.toFixed(1)}
-              <input
-                type="range"
-                min={0}
-                max={8}
-                step={0.5}
-                value={blurPx}
-                onChange={(e) => setBlurPx(Number(e.target.value))}
-              />
-            </label>
-            <label className="slider" title="Blur on the copy/erase square outside god mode, in cells">
-              Tool blur: {toolBlur.toFixed(1)}
-              <input
-                type="range"
-                min={0}
-                max={5}
-                step={0.5}
-                value={toolBlur}
-                onChange={(e) => setToolBlur(Number(e.target.value))}
-              />
-            </label>
-            <label className="slider" title="How far the tool square's drawn edges wander through the world-locked warp field, in cells">
-              Warp: {warpAmp.toFixed(1)}
-              <input
-                type="range"
-                min={0}
-                max={5}
-                step={0.25}
-                value={warpAmp}
-                onChange={(e) => setWarpAmp(Number(e.target.value))}
-              />
-            </label>
-            <label className="slider" title="Feature size of the warp field, in cells">
-              Warp scale: {warpScale}
-              <input
-                type="range"
-                min={2}
-                max={30}
-                step={1}
-                value={warpScale}
-                onChange={(e) => setWarpScale(Number(e.target.value))}
-              />
-            </label>
+            <Slider
+              label={`Blur: ${obscura.blurPx.toFixed(1)}`}
+              title="Gaussian blur applied outside god mode"
+              min={0}
+              max={8}
+              step={0.5}
+              value={obscura.blurPx}
+              onChange={(v) => setObscura((o) => ({ ...o, blurPx: v }))}
+            />
+            <Slider
+              label={`Tool blur: ${obscura.toolBlur.toFixed(1)}`}
+              title="Blur on the copy/erase square outside god mode, in cells"
+              min={0}
+              max={5}
+              step={0.5}
+              value={obscura.toolBlur}
+              onChange={(v) => setObscura((o) => ({ ...o, toolBlur: v }))}
+            />
+            <Slider
+              label={`Warp: ${obscura.warpAmp.toFixed(1)}`}
+              title="How far the tool square's drawn edges wander through the world-locked warp field, in cells"
+              min={0}
+              max={5}
+              step={0.25}
+              value={obscura.warpAmp}
+              onChange={(v) => setObscura((o) => ({ ...o, warpAmp: v }))}
+            />
+            <Slider
+              label={`Warp scale: ${obscura.warpScale}`}
+              title="Feature size of the warp field, in cells"
+              min={2}
+              max={30}
+              step={1}
+              value={obscura.warpScale}
+              onChange={(v) => setObscura((o) => ({ ...o, warpScale: v }))}
+            />
           </>
         )}
         <label className="checkbox" title="Toggle with G">
@@ -607,69 +591,17 @@ export default function App() {
         <button onClick={() => adoptWorld(buildStarterWorld(GRID_W, GRID_H))}>Reset world</button>
       </div>
       {godMode && (
-        <details className="lake-editor">
-          <summary>
-            Lake ripple layers ({lakeLayers.length}
-            {lakeIsStill(lakeLayers) ? ', still' : ''})
-          </summary>
-          <table>
-            <thead>
-              <tr>
-                {LAKE_FIELDS.map((f) => (
-                  <th key={f.key}>{f.label}</th>
-                ))}
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {lakeLayers.map((layer, i) => (
-                <tr key={i}>
-                  {LAKE_FIELDS.map((f) => (
-                    <td key={f.key}>
-                      <input
-                        type="number"
-                        min={f.min}
-                        max={f.max}
-                        step={f.step}
-                        value={layer[f.key]}
-                        onChange={(e) => {
-                          const v = e.target.valueAsNumber;
-                          if (!Number.isFinite(v)) return;
-                          setLakeLayers((ls) => ls.map((l, j) => (j === i ? { ...l, [f.key]: v } : l)));
-                        }}
-                      />
-                    </td>
-                  ))}
-                  <td>
-                    <button
-                      title="Remove this layer"
-                      onClick={() => setLakeLayers((ls) => ls.filter((_, j) => j !== i))}
-                    >
-                      ✕
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <button
-            onClick={() =>
-              setLakeLayers((ls) => [
-                ...ls,
-                { waveDir: 0, waveSpeed: 1, magnitude: 1, wavelength: 12, timeScale: 1 },
-              ])
-            }
-          >
-            + Add layer
-          </button>
-        </details>
+        <LakeEditor
+          layers={obscura.lakeLayers}
+          onChange={(ls) => setObscura((o) => ({ ...o, lakeLayers: ls }))}
+        />
       )}
       <div className="main">
         <canvas
           ref={canvasRef}
           width={GRID_W * CELL}
           height={GRID_H * CELL}
-          style={{ filter: !godMode && blurPx > 0 ? `blur(${blurPx}px)` : 'none' }}
+          style={{ filter: !godMode && obscura.blurPx > 0 ? `blur(${obscura.blurPx}px)` : 'none' }}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={endDrag}

@@ -1,5 +1,10 @@
 import type { Cell, Edge, Machine, MachineType, PortDef, Pump, Side } from './types';
 
+// World dimensions, in fine cells, and the on-canvas pixel size of one cell.
+export const GRID_W = 170;
+export const GRID_H = 110;
+export const CELL = 6;
+
 export const DX = [0, 1, 0, -1]; // N E S W
 export const DY = [-1, 0, 1, 0];
 export const SIDE_NAMES = ['north', 'east', 'south', 'west'];
