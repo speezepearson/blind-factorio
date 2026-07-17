@@ -114,9 +114,10 @@ export default function App() {
   const [copySuper, setCopySuper] = useState(3); // copy square side, in supercells (odd)
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   // God mode = the designer's view: labels, fine grid, machine placement,
-  // editing. Off = the player's obscured view: anonymous machines + blur.
-  const [godMode, setGodMode] = useState(true);
-  const [blurPx, setBlurPx] = useState(2); // Gaussian blur strength outside god mode
+  // editing. Off (the default) = the player's obscured view: anonymous
+  // machines + blur.
+  const [godMode, setGodMode] = useState(false);
+  const [blurPx, setBlurPx] = useState(3); // Gaussian blur strength outside god mode
   const [placeRotation, setPlaceRotation] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hover, setHover] = useState<Hover>(null);
@@ -687,7 +688,45 @@ export default function App() {
 
   // ---- world sharing -----------------------------------------------------
 
+  const adoptWorld = (world: World) => {
+    worldRef.current = world;
+    simRef.current = prewarm(world);
+    setClipboard(null);
+    setSelectedId(null);
+    draw();
+  };
+
+  // #world=<code> in the URL loads that world (on first visit and on change)
+  useEffect(() => {
+    const loadFromHash = async () => {
+      const m = window.location.hash.match(/^#world=(.+)$/);
+      if (!m) return;
+      try {
+        adoptWorld(await worldFromCode(decodeURIComponent(m[1])));
+      } catch {
+        window.alert('Could not load the world from this link.');
+      }
+    };
+    loadFromHash();
+    window.addEventListener('hashchange', loadFromHash);
+    return () => window.removeEventListener('hashchange', loadFromHash);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [exportLabel, setExportLabel] = useState('Export');
+  const [shareLabel, setShareLabel] = useState('Share link');
+
+  const shareWorld = async () => {
+    const code = await worldToCode(worldRef.current);
+    const url = `${window.location.origin}${window.location.pathname}#world=${code}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareLabel('Link copied!');
+      setTimeout(() => setShareLabel('Share link'), 1500);
+    } catch {
+      window.prompt('Copy this link:', url);
+    }
+  };
 
   const exportWorld = async () => {
     const code = await worldToCode(worldRef.current);
@@ -704,12 +743,7 @@ export default function App() {
     const code = window.prompt('Paste a world code:');
     if (!code?.trim()) return;
     try {
-      const world = await worldFromCode(code);
-      worldRef.current = world;
-      simRef.current = prewarm(world);
-      setClipboard(null);
-      setSelectedId(null);
-      draw();
+      adoptWorld(await worldFromCode(code));
     } catch {
       window.alert('Could not read that world code.');
     }
@@ -956,6 +990,7 @@ export default function App() {
           />
           God mode
         </label>
+        <button onClick={shareWorld}>{shareLabel}</button>
         <button onClick={exportWorld}>{exportLabel}</button>
         <button onClick={importWorld}>Import</button>
         <button
