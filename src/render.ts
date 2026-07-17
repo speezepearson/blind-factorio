@@ -2,16 +2,78 @@ import {
   DX, DY, cellKey, machineCellMap, orientPath, parseKey, perimeterSegments, placeMachine,
 } from './geom';
 import type { PlacedMachine } from './geom';
-import { TYPE_BY_ID, paleTint, totalRate } from './machines';
+import { SCALE, TYPE_BY_ID, paleTint, totalRate } from './machines';
 import { placeAll, pumpKey } from './sim';
 import type { SimState } from './sim';
-import { machinePlacementOk } from './clipboard';
+import { machinePlacementOk, squareTL } from './clipboard';
 import type { Clipboard } from './clipboard';
 import type { Cell, Side, World } from './types';
 
 export const GRID_W = 170;
 export const GRID_H = 110;
 export const CELL = 6;
+
+// --- world-locked warp field ------------------------------------------------
+// Smooth value noise anchored to map pixels. Outside god mode the tool square
+// is drawn through this fixed field, so its apparent shape undulates as it
+// moves across the world — purely cosmetic; the real region stays a square.
+
+function latticeHash(ix: number, iy: number, seed: number): number {
+  let h = (Math.imul(ix, 0x27d4eb2d) ^ Math.imul(iy, 0x165667b1) ^ seed) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 0xffffffff;
+}
+
+function valueNoise(x: number, y: number, seed: number): number {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = x - ix;
+  const fy = y - iy;
+  const sx = fx * fx * (3 - 2 * fx);
+  const sy = fy * fy * (3 - 2 * fy);
+  const a = latticeHash(ix, iy, seed);
+  const b = latticeHash(ix + 1, iy, seed);
+  const c = latticeHash(ix, iy + 1, seed);
+  const d = latticeHash(ix + 1, iy + 1, seed);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+
+// displacement (in px) of the warp field at map-pixel (px, py)
+function warpOffset(px: number, py: number, ampPx: number, scalePx: number): [number, number] {
+  return [
+    (valueNoise(px / scalePx, py / scalePx, 0x9e3779b9) * 2 - 1) * ampPx,
+    (valueNoise(px / scalePx, py / scalePx, 0x7f4a7c15) * 2 - 1) * ampPx,
+  ];
+}
+
+// Set the current path to the rect with its perimeter displaced through the
+// warp field, sampled every few px so the wobble stays smooth.
+function traceWarpedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number,
+  ampPx: number, scalePx: number,
+): void {
+  const corners: Array<[number, number]> = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+  ctx.beginPath();
+  let first = true;
+  for (let i = 0; i < 4; i++) {
+    const [ax, ay] = corners[i];
+    const [bx, by] = corners[(i + 1) % 4];
+    const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 4));
+    for (let s = 0; s < steps; s++) {
+      const t = s / steps;
+      const px = ax + (bx - ax) * t;
+      const py = ay + (by - ay) * t;
+      const [dx, dy] = warpOffset(px, py, ampPx, scalePx);
+      if (first) {
+        ctx.moveTo(px + dx, py + dy);
+        first = false;
+      } else ctx.lineTo(px + dx, py + dy);
+    }
+  }
+  ctx.closePath();
+}
 
 export type Tool =
   | { kind: 'pipe' }
@@ -31,8 +93,10 @@ export interface ViewState {
   world: World;
   sim: SimState;
   godMode: boolean;
-  superSize: number;
-  copyCells: number; // the real copy region side in fine cells
+  toolBlur: number; // blur radius on the copy/erase square outside god mode, in cells
+  warpAmp: number; // how far the square's drawn edges wander outside god mode, in cells
+  warpScale: number; // feature size of the warp field, in cells
+  copyCells: number; // the copy region side in fine cells
   tool: Tool;
   hoverCell: Cell | null;
   drag: DragState;
@@ -51,24 +115,24 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#fbfaf7';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // players see only supercell boundaries; god mode also gets the fine grid
-  const S = view.superSize;
-  const strides: Array<[string, number]> = view.godMode
-    ? [['#f3f1ea', 1], ['#e0dcd2', S]]
-    : [['#e0dcd2', S]];
-  for (const [style, stride] of strides) {
-    ctx.strokeStyle = style;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = 0; x <= GRID_W; x += stride) {
-      ctx.moveTo(x * CELL + 0.5, 0);
-      ctx.lineTo(x * CELL + 0.5, GRID_H * CELL);
+  // players get no grid at all; god mode gets the fine grid plus an accent
+  // line every SCALE cells (the machine-authoring pitch)
+  if (view.godMode) {
+    const strides: Array<[string, number]> = [['#f3f1ea', 1], ['#e0dcd2', SCALE]];
+    for (const [style, stride] of strides) {
+      ctx.strokeStyle = style;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 0; x <= GRID_W; x += stride) {
+        ctx.moveTo(x * CELL + 0.5, 0);
+        ctx.lineTo(x * CELL + 0.5, GRID_H * CELL);
+      }
+      for (let y = 0; y <= GRID_H; y += stride) {
+        ctx.moveTo(0, y * CELL + 0.5);
+        ctx.lineTo(GRID_W * CELL, y * CELL + 0.5);
+      }
+      ctx.stroke();
     }
-    for (let y = 0; y <= GRID_H; y += stride) {
-      ctx.moveTo(0, y * CELL + 0.5);
-      ctx.lineTo(GRID_W * CELL, y * CELL + 0.5);
-    }
-    ctx.stroke();
   }
 
   const edgeMid = (x: number, y: number, s: Side): [number, number] => [
@@ -209,40 +273,47 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     }
   }
 
-  // copy/paste and erase previews — deliberately coarse: only supercells
-  // are highlighted, even though the real region is fine-grid-precise
+  // copy/paste and erase previews — the true cursor-centered square, but
+  // outside god mode its outline is warped through the world-locked noise
+  // field and blurred, so its exact position and edges can't be pinned down
   const t = view.tool;
   const hc = view.hoverCell;
   if ((t.kind === 'copy' || t.kind === 'erase') && hc) {
     const clip = t.kind === 'copy' ? view.clipboard : null;
     const n = clip ? clip.size : view.copyCells;
-    const nSuper = Math.max(1, Math.round(n / S)); // square side, in supercells
-    const sx = Math.floor(hc[0] / S);
-    const sy = Math.floor(hc[1] / S);
-    const tlx = sx - Math.floor(nSuper / 2);
-    const tly = sy - Math.floor(nSuper / 2);
-    const [weak, strong, line] =
+    const [tlx, tly] = squareTL(hc, n);
+    const [fill, line] =
       t.kind === 'erase'
-        ? ['rgba(214, 60, 60, 0.10)', 'rgba(214, 60, 60, 0.20)', '#d63c3c']
+        ? ['rgba(214, 60, 60, 0.14)', '#d63c3c']
         : clip
-          ? ['rgba(47, 127, 209, 0.14)', 'rgba(47, 127, 209, 0.22)', '#2f7fd1']
-          : ['rgba(74, 70, 64, 0.10)', 'rgba(74, 70, 64, 0.18)', '#4a4640'];
-    ctx.fillStyle = weak;
-    ctx.fillRect(tlx * S * CELL, tly * S * CELL, nSuper * S * CELL, nSuper * S * CELL);
-    // the supercell under the cursor, a shade stronger
-    ctx.fillStyle = strong;
-    ctx.fillRect(sx * S * CELL, sy * S * CELL, S * CELL, S * CELL);
+          ? ['rgba(47, 127, 209, 0.16)', '#2f7fd1']
+          : ['rgba(74, 70, 64, 0.13)', '#4a4640'];
+    ctx.save();
+    if (!view.godMode && view.toolBlur > 0) ctx.filter = `blur(${view.toolBlur * CELL}px)`;
+    const ampPx = view.godMode ? 0 : view.warpAmp * CELL;
+    if (ampPx > 0) {
+      traceWarpedRect(ctx, tlx * CELL, tly * CELL, n * CELL, n * CELL, ampPx, view.warpScale * CELL);
+    } else {
+      ctx.beginPath();
+      ctx.rect(tlx * CELL + 0.5, tly * CELL + 0.5, n * CELL, n * CELL);
+    }
+    ctx.fillStyle = fill;
+    ctx.fill();
     if (clip?.snapshot) {
-      // ghost of what the copy-time supercell square looked like
+      // ghost of what the copied region looked like at copy time, clipped to
+      // the (possibly warped) square
+      ctx.save();
+      ctx.clip();
       ctx.globalAlpha = 0.55;
-      ctx.drawImage(clip.snapshot, tlx * S * CELL, tly * S * CELL, nSuper * S * CELL, nSuper * S * CELL);
-      ctx.globalAlpha = 1;
+      ctx.drawImage(clip.snapshot, tlx * CELL, tly * CELL, n * CELL, n * CELL);
+      ctx.restore();
     }
     ctx.strokeStyle = line;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([5, 4]);
-    ctx.strokeRect(tlx * S * CELL + 0.5, tly * S * CELL + 0.5, nSuper * S * CELL, nSuper * S * CELL);
+    ctx.stroke();
     ctx.setLineDash([]);
+    ctx.restore();
   }
 
   // machine placement ghost (god mode)

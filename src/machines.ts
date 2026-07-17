@@ -62,7 +62,7 @@ function weightedMix(fm: FluidMap): string {
 // Machine shapes are authored on a coarse grid and expanded onto the real
 // (5x finer) grid, so each authored cell becomes a SCALE x SCALE block and
 // each authored port edge becomes SCALE consecutive edges.
-const SCALE = 5;
+export const SCALE = 5;
 
 function scaleCells(cells: Cell[]): Cell[] {
   return cells.flatMap(([x, y]) => {

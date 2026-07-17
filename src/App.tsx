@@ -41,14 +41,16 @@ export default function App() {
   const simRef = useRef<SimState>(initial.sim);
 
   const [tool, setTool] = useState<Tool>({ kind: 'pipe' });
-  const [superSize, setSuperSize] = useState(6); // visual supercell size, in fine cells
-  const [copySuper, setCopySuper] = useState(3); // copy square side, in supercells (odd)
+  const [copySize, setCopySize] = useState(19); // copy square side, in fine cells (odd)
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   // God mode = the designer's view: labels, fine grid, machine placement,
   // editing. Off (the default) = the player's obscured view: anonymous
   // machines + blur.
   const [godMode, setGodMode] = useState(false);
-  const [blurPx, setBlurPx] = useState(3); // Gaussian blur strength outside god mode
+  const [blurPx, setBlurPx] = useState(3); // whole-canvas Gaussian blur outside god mode
+  const [toolBlur, setToolBlur] = useState(3); // blur on the copy/erase square outside god mode, in cells
+  const [warpAmp, setWarpAmp] = useState(2); // how far the square's drawn edges wander, in cells
+  const [warpScale, setWarpScale] = useState(10); // feature size of the warp field, in cells
   const [placeRotation, setPlaceRotation] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hover, setHover] = useState<Hover>(null);
@@ -56,12 +58,14 @@ export default function App() {
 
   const toolRef = useRef(tool);
   toolRef.current = tool;
-  const superSizeRef = useRef(superSize);
-  superSizeRef.current = superSize;
-  const copySuperRef = useRef(copySuper);
-  copySuperRef.current = copySuper;
-  // the real copy region side in fine cells
-  const copyCells = () => copySuperRef.current * superSizeRef.current;
+  const copySizeRef = useRef(copySize);
+  copySizeRef.current = copySize;
+  const toolBlurRef = useRef(toolBlur);
+  toolBlurRef.current = toolBlur;
+  const warpAmpRef = useRef(warpAmp);
+  warpAmpRef.current = warpAmp;
+  const warpScaleRef = useRef(warpScale);
+  warpScaleRef.current = warpScale;
   const clipboardRef = useRef(clipboard);
   clipboardRef.current = clipboard;
   const godModeRef = useRef(godMode);
@@ -131,10 +135,10 @@ export default function App() {
     setHover((h) => (hoverKey(h) === hoverKey(next) ? h : next));
   };
 
-  // Wipe the copy-sized square anchored on the cursor's fine cell: pumps
-  // inside it go, and machines overlapping it even partially go whole.
+  // Wipe the copy-sized square centered on the cursor: pumps inside it go,
+  // and machines overlapping it even partially go whole.
   const eraseRegion = (anchor: Cell) => {
-    const n = copyCells();
+    const n = copySizeRef.current;
     const tl = squareTL(anchor, n);
     const world = worldRef.current;
     const inSquare = ([x, y]: Cell) =>
@@ -180,23 +184,21 @@ export default function App() {
 
   // ---- copy/paste --------------------------------------------------------
 
-  // Photograph the supercell square highlighted around the given cell, with
-  // the hover overlay suppressed, for use as the paste ghost.
-  const snapshotSupercells = (cell: Cell): HTMLCanvasElement | undefined => {
+  // Photograph the copied region (with the tool overlay suppressed) for use
+  // as the paste ghost.
+  const snapshotRegion = (cell: Cell): HTMLCanvasElement | undefined => {
     const cv = canvasRef.current;
     if (!cv) return undefined;
-    const S = superSizeRef.current;
-    const nSuper = Math.max(1, Math.round(copyCells() / S));
-    const tlx = Math.floor(cell[0] / S) - Math.floor(nSuper / 2);
-    const tly = Math.floor(cell[1] / S) - Math.floor(nSuper / 2);
-    const px = nSuper * S * CELL;
+    const n = copySizeRef.current;
+    const [tlx, tly] = squareTL(cell, n);
+    const px = n * CELL;
     const prevHover = hoverCellRef.current;
     hoverCellRef.current = null;
     draw();
     const snap = document.createElement('canvas');
     snap.width = px;
     snap.height = px;
-    snap.getContext('2d')!.drawImage(cv, tlx * S * CELL, tly * S * CELL, px, px, 0, 0, px, px);
+    snap.getContext('2d')!.drawImage(cv, tlx * CELL, tly * CELL, px, px, 0, 0, px, px);
     hoverCellRef.current = prevHover;
     draw();
     return snap;
@@ -211,8 +213,10 @@ export default function App() {
       world: worldRef.current,
       sim: simRef.current,
       godMode: godModeRef.current,
-      superSize: superSizeRef.current,
-      copyCells: copyCells(),
+      toolBlur: toolBlurRef.current,
+      warpAmp: warpAmpRef.current,
+      warpScale: warpScaleRef.current,
+      copyCells: copySizeRef.current,
       tool: toolRef.current,
       hoverCell: hoverCellRef.current,
       drag: dragRef.current,
@@ -221,6 +225,15 @@ export default function App() {
       placeRotation: placeRotationRef.current,
     };
     drawWorld(cv, view);
+  };
+
+  // Leaving god mode drops the god-only tools and selection.
+  const setGodModeTo = (god: boolean) => {
+    setGodMode(god);
+    if (!god) {
+      setSelectedId(null);
+      setTool((t) => (t.kind === 'edit' || t.kind === 'place' ? { kind: 'pipe' } : t));
+    }
   };
 
   // ---- lifecycle ---------------------------------------------------------
@@ -244,6 +257,10 @@ export default function App() {
         return;
       }
       if (e.key === 'Escape') setClipboard(null);
+      if ((e.key === 'g' || e.key === 'G') && !e.ctrlKey && !e.metaKey) {
+        setGodModeTo(!godModeRef.current);
+        return;
+      }
       if (e.key === 'r' || e.key === 'R') {
         if (toolRef.current.kind === 'place') setPlaceRotation((r) => (r + 1) % 4);
         else setClipboard((c) => (c ? rotateClipboard(c) : c));
@@ -260,7 +277,7 @@ export default function App() {
   useEffect(() => {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [godMode, clipboard, tool, copySuper, superSize, selectedId, placeRotation]);
+  }, [godMode, clipboard, tool, copySize, toolBlur, warpAmp, warpScale, selectedId, placeRotation]);
 
   // ---- mouse handlers ----------------------------------------------------
 
@@ -305,9 +322,9 @@ export default function App() {
         checkpoint();
         pasteClipboard(worldRef.current, squareTL(cell, clip.size), clip);
       } else {
-        const n = copyCells();
+        const n = copySizeRef.current;
         const captured = captureRegion(worldRef.current, squareTL(cell, n), n);
-        captured.snapshot = snapshotSupercells(cell);
+        captured.snapshot = snapshotRegion(cell);
         setClipboard(captured);
       }
     }
@@ -446,14 +463,14 @@ export default function App() {
           Copy/paste
         </button>
         <label className="slider">
-          {copySuper}×{copySuper}
+          {copySize}×{copySize}
           <input
             type="range"
-            min={1}
-            max={7}
+            min={5}
+            max={45}
             step={2}
-            value={copySuper}
-            onChange={(e) => setCopySuper(Number(e.target.value))}
+            value={copySize}
+            onChange={(e) => setCopySize(Number(e.target.value))}
           />
         </label>
         <button className={tool.kind === 'erase' ? 'active' : ''} onClick={() => setTool({ kind: 'erase' })}>
@@ -486,16 +503,6 @@ export default function App() {
         <span className="spacer" />
         {godMode && (
           <>
-            <label className="slider">
-              Grid: {superSize}
-              <input
-                type="range"
-                min={2}
-                max={20}
-                value={superSize}
-                onChange={(e) => setSuperSize(Number(e.target.value))}
-              />
-            </label>
             <label className="slider" title="Gaussian blur applied outside god mode">
               Blur: {blurPx.toFixed(1)}
               <input
@@ -507,20 +514,46 @@ export default function App() {
                 onChange={(e) => setBlurPx(Number(e.target.value))}
               />
             </label>
+            <label className="slider" title="Blur on the copy/erase square outside god mode, in cells">
+              Tool blur: {toolBlur.toFixed(1)}
+              <input
+                type="range"
+                min={0}
+                max={5}
+                step={0.5}
+                value={toolBlur}
+                onChange={(e) => setToolBlur(Number(e.target.value))}
+              />
+            </label>
+            <label className="slider" title="How far the tool square's drawn edges wander through the world-locked warp field, in cells">
+              Warp: {warpAmp.toFixed(1)}
+              <input
+                type="range"
+                min={0}
+                max={5}
+                step={0.25}
+                value={warpAmp}
+                onChange={(e) => setWarpAmp(Number(e.target.value))}
+              />
+            </label>
+            <label className="slider" title="Feature size of the warp field, in cells">
+              Warp scale: {warpScale}
+              <input
+                type="range"
+                min={2}
+                max={30}
+                step={1}
+                value={warpScale}
+                onChange={(e) => setWarpScale(Number(e.target.value))}
+              />
+            </label>
           </>
         )}
-        <label className="checkbox">
+        <label className="checkbox" title="Toggle with G">
           <input
             type="checkbox"
             checked={godMode}
-            onChange={(e) => {
-              const god = e.target.checked;
-              setGodMode(god);
-              if (!god) {
-                setSelectedId(null);
-                setTool((t) => (t.kind === 'edit' || t.kind === 'place' ? { kind: 'pipe' } : t));
-              }
-            }}
+            onChange={(e) => setGodModeTo(e.target.checked)}
           />
           God mode
         </label>
@@ -556,7 +589,7 @@ export default function App() {
             selectedId={selectedId}
             godMode={godMode}
             clipboard={clipboard}
-            copySuper={copySuper}
+            copySize={copySize}
             onParamChange={onParamChange}
           />
         </div>

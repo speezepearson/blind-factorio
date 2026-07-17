@@ -33,11 +33,11 @@ interface PanelProps {
   selectedId: number | null;
   godMode: boolean;
   clipboard: Clipboard | null;
-  copySuper: number;
+  copySize: number;
   onParamChange: (machine: Machine, pd: ParamDef, value: ParamValue) => void;
 }
 
-export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard, copySuper, onParamChange }: PanelProps) {
+export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard, copySize, onParamChange }: PanelProps) {
   if (tool.kind === 'edit') {
     const machine = world.machines.find((m) => m.id === selectedId);
     if (!machine) {
@@ -161,7 +161,7 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
           </ul>
         ) : (
           <ul className="help">
-            <li>Click to copy the outlined {copySuper}×{copySuper}-supercell square.</li>
+            <li>Click to copy the {copySize}×{copySize}-cell square centered on the cursor.</li>
             <li>Any machine overlapping the square — even partially — is copied whole.</li>
             <li>Use the slider to change the square size.</li>
           </ul>

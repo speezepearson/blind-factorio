@@ -3,8 +3,7 @@
 A prototype sandbox for a game about **manipulating a factory you can't touch very precisely**.
 Colored fluids flow through pumps between machines on a square grid. A designer ("god mode")
 builds a factory with full information; a player sees an obscured version — blurred, anonymous
-machines on a deliberately-too-coarse grid — and has to probe and manipulate it with clumsy,
-supercell-granular tools.
+machines on a gridless canvas — and has to probe and manipulate it with fuzzy tools.
 
 ## Running it
 
@@ -21,9 +20,8 @@ npm run lint    # oxlint
 
 ## The rules of the world
 
-- The world is a fine grid (170×110 cells of 6px), but it is *displayed* as coarse
-  "supercells" (default 6×6 fine cells). Machines are authored on an even coarser 5×
-  grid (`SCALE` in `machines.ts`), so a "2×2" machine really occupies 10×10 fine cells.
+- The world is a fine grid (170×110 cells of 6px). Machines are authored on a coarser
+  5× grid (`SCALE` in `machines.ts`), so a "2×2" machine really occupies 10×10 fine cells.
 - Each fine cell is blank, part of a machine, or holds pumps. A cell can hold **two**
   crossing straight pumps (one per axis); a bent pump claims the whole cell (`mergePumps`).
 - Machines have ports (contiguous runs of perimeter edges) and a `compute` function from
@@ -63,12 +61,16 @@ per *gesture* (rapid edits of the same machine param coalesce).
 
 Two views of the same world:
 
-- **God mode** (checkbox, default off): fine-grid ticks, machine identities/labels/ports,
-  placement buttons, dragging machines (Edit tool), param sliders, grid/blur sliders.
-- **Player view**: supercell grid only, anonymous grey machines, Gaussian-blurred canvas,
-  inspector refuses to identify machines. Tools are honest-but-coarse: copy/erase highlight
-  whole supercells while the real region is anchored to the cursor's exact fine cell —
-  the player has more precision than the UI admits, which is a core game-feel experiment.
+- **God mode** (checkbox or **G**, default off): fine-grid lines, machine
+  identities/labels/ports, placement buttons, dragging machines (Edit tool), param
+  sliders, blur/warp sliders.
+- **Player view**: no grid lines at all, anonymous grey machines, Gaussian-blurred canvas,
+  inspector refuses to identify machines. The copy/erase square is honestly centered on
+  the cursor, but its drawn outline is displaced through a world-locked smooth noise
+  field ("Warp" amplitude + "Warp scale" sliders, in cells) and Gaussian-blurred ("Tool
+  blur" slider) — so the blob wobbles as it moves and its exact position and edges can't
+  be pinned down. All of this is cosmetic; the affected region stays a perfect square.
+  Imprecision-by-fog is a core game-feel experiment.
 
 ## Sharing
 

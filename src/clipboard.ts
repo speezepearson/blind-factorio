@@ -10,8 +10,8 @@ export interface Clipboard {
   size: number;
   machines: Array<{ typeId: string; rotation: number; rel: Cell; params?: Record<string, ParamValue> }>;
   pumps: Array<{ rel: Cell; pump: Pump }>;
-  // visual snapshot of the supercell square highlighted at copy time (which is
-  // not exactly the copied fine-grid region) — shown as the paste ghost
+  // visual snapshot of the copied region at copy time — shown as the paste
+  // ghost (blurred, outside god mode)
   snapshot?: HTMLCanvasElement;
 }
 
