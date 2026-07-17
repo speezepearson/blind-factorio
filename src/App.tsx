@@ -3,9 +3,10 @@ import {
   DX, DY, SIDE_NAMES, cellKey, mergePumps, orientPath, parseKey, placeMachine, rotateSide,
 } from './geom';
 import type { PlacedMachine } from './geom';
-import { FLUID_NAMES, TYPE_BY_ID, paleTint, totalRate } from './machines';
+import { FLUID_NAMES, MACHINE_TYPES, TYPE_BY_ID, paleTint, totalRate } from './machines';
 import { emptySim, placeAll, pumpKey, step } from './sim';
 import type { SimState } from './sim';
+import { worldFromCode, worldToCode } from './serialize';
 import { buildStarterWorld } from './starter';
 import type { Cell, FluidMap, Machine, ParamValue, Pump, Side, World } from './types';
 import './App.css';
@@ -15,7 +16,12 @@ const GRID_H = 110;
 const CELL = 6;
 const TICK_MS = 110;
 
-type Tool = { kind: 'pipe' } | { kind: 'copy' } | { kind: 'erase' } | { kind: 'edit' };
+type Tool =
+  | { kind: 'pipe' }
+  | { kind: 'copy' }
+  | { kind: 'erase' }
+  | { kind: 'edit' }
+  | { kind: 'place'; typeId: string };
 
 type Hover = { kind: 'machine'; machineId: number } | { kind: 'pump'; key: string } | null;
 
@@ -62,11 +68,16 @@ function rotateClipboard(clip: Clipboard): Clipboard {
   };
 }
 
+// Pre-run the sim so a fresh or imported world is already flowing.
+function prewarm(world: World): SimState {
+  let sim = emptySim();
+  for (let i = 0; i < 400; i++) sim = step(world, sim);
+  return sim;
+}
+
 function freshWorld(): { world: World; sim: SimState } {
   const world = buildStarterWorld(GRID_W, GRID_H);
-  let sim = emptySim();
-  for (let i = 0; i < 400; i++) sim = step(world, sim); // pre-warm so it starts flowing
-  return { world, sim };
+  return { world, sim: prewarm(world) };
 }
 
 function machineCellMap(placed: PlacedMachine[]): Map<string, PlacedMachine> {
@@ -102,8 +113,11 @@ export default function App() {
   const [superSize, setSuperSize] = useState(6); // visual supercell size, in fine cells
   const [copySuper, setCopySuper] = useState(3); // copy square side, in supercells (odd)
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
-  const [hideLabels, setHideLabels] = useState(false);
-  const [blurPx, setBlurPx] = useState(2); // Gaussian blur strength while labels are hidden
+  // God mode = the designer's view: labels, fine grid, machine placement,
+  // editing. Off = the player's obscured view: anonymous machines + blur.
+  const [godMode, setGodMode] = useState(true);
+  const [blurPx, setBlurPx] = useState(2); // Gaussian blur strength outside god mode
+  const [placeRotation, setPlaceRotation] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hover, setHover] = useState<Hover>(null);
   const [, setTick] = useState(0); // re-render so the info panel shows live flows
@@ -118,8 +132,10 @@ export default function App() {
   const copyCells = () => copySuperRef.current * superSizeRef.current;
   const clipboardRef = useRef(clipboard);
   clipboardRef.current = clipboard;
-  const hideLabelsRef = useRef(hideLabels);
-  hideLabelsRef.current = hideLabels;
+  const godModeRef = useRef(godMode);
+  godModeRef.current = godMode;
+  const placeRotationRef = useRef(placeRotation);
+  placeRotationRef.current = placeRotation;
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const hoverCellRef = useRef<Cell | null>(null);
@@ -300,20 +316,25 @@ export default function App() {
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.fillStyle = '#fbfaf7';
     ctx.fillRect(0, 0, cv.width, cv.height);
-    // only supercell boundaries are drawn; the fine grid stays invisible
+    // players see only supercell boundaries; god mode also gets the fine grid
     const S = superSizeRef.current;
-    ctx.strokeStyle = '#e0dcd2';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = 0; x <= GRID_W; x += S) {
-      ctx.moveTo(x * CELL + 0.5, 0);
-      ctx.lineTo(x * CELL + 0.5, GRID_H * CELL);
+    const strides: Array<[string, number]> = godModeRef.current
+      ? [['#f3f1ea', 1], ['#e0dcd2', S]]
+      : [['#e0dcd2', S]];
+    for (const [style, stride] of strides) {
+      ctx.strokeStyle = style;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 0; x <= GRID_W; x += stride) {
+        ctx.moveTo(x * CELL + 0.5, 0);
+        ctx.lineTo(x * CELL + 0.5, GRID_H * CELL);
+      }
+      for (let y = 0; y <= GRID_H; y += stride) {
+        ctx.moveTo(0, y * CELL + 0.5);
+        ctx.lineTo(GRID_W * CELL, y * CELL + 0.5);
+      }
+      ctx.stroke();
     }
-    for (let y = 0; y <= GRID_H; y += S) {
-      ctx.moveTo(0, y * CELL + 0.5);
-      ctx.lineTo(GRID_W * CELL, y * CELL + 0.5);
-    }
-    ctx.stroke();
 
     const edgeMid = (x: number, y: number, s: Side): [number, number] => [
       x * CELL + CELL / 2 + (DX[s] * CELL) / 2,
@@ -366,7 +387,7 @@ export default function App() {
     }
 
     const drawMachine = (pm: PlacedMachine, alpha = 1, invalid = false) => {
-      const hidden = hideLabelsRef.current;
+      const hidden = !godModeRef.current;
       ctx.globalAlpha = alpha;
       const cellSet = new Set(pm.cells.map(([x, y]) => cellKey(x, y)));
       // a machine with a color param wears a pale tint of its configured color
@@ -497,6 +518,15 @@ export default function App() {
       ctx.setLineDash([]);
     }
 
+    // machine placement ghost (god mode)
+    if (t.kind === 'place' && hc && !drag) {
+      const ghost = placeMachine(
+        { id: -1, typeId: t.typeId, origin: hc, rotation: placeRotationRef.current },
+        TYPE_BY_ID[t.typeId],
+      );
+      drawMachine(ghost, 0.5, !machinePlacementOk(ghost));
+    }
+
     // selection outline in edit mode
     if (t.kind === 'edit' && selectedIdRef.current !== null) {
       const sel = placed.find((pm) => pm.machine.id === selectedIdRef.current);
@@ -538,7 +568,10 @@ export default function App() {
     }, TICK_MS);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setClipboard(null);
-      if (e.key === 'r' || e.key === 'R') setClipboard((c) => (c ? rotateClipboard(c) : c));
+      if (e.key === 'r' || e.key === 'R') {
+        if (toolRef.current.kind === 'place') setPlaceRotation((r) => (r + 1) % 4);
+        else setClipboard((c) => (c ? rotateClipboard(c) : c));
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => {
@@ -551,7 +584,7 @@ export default function App() {
   useEffect(() => {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hideLabels, clipboard, tool, copySuper, superSize, selectedId]);
+  }, [godMode, clipboard, tool, copySuper, superSize, selectedId, placeRotation]);
 
   // ---- mouse handlers ----------------------------------------------------
 
@@ -569,6 +602,18 @@ export default function App() {
     } else if (t.kind === 'edit') {
       const pm = machineCellMap(placeAll(worldRef.current)).get(cellKey(cell[0], cell[1]));
       setSelectedId(pm ? pm.machine.id : null);
+    } else if (t.kind === 'place') {
+      const world = worldRef.current;
+      const machine: Machine = {
+        id: world.nextMachineId,
+        typeId: t.typeId,
+        origin: cell,
+        rotation: placeRotationRef.current,
+      };
+      if (machinePlacementOk(placeMachine(machine, TYPE_BY_ID[t.typeId]))) {
+        world.machines.push(machine);
+        world.nextMachineId++;
+      }
     } else {
       const clip = clipboardRef.current;
       if (clip) {
@@ -616,6 +661,36 @@ export default function App() {
     draw();
   };
 
+  // ---- world sharing -----------------------------------------------------
+
+  const [exportLabel, setExportLabel] = useState('Export');
+
+  const exportWorld = async () => {
+    const code = await worldToCode(worldRef.current);
+    try {
+      await navigator.clipboard.writeText(code);
+      setExportLabel('Copied!');
+      setTimeout(() => setExportLabel('Export'), 1500);
+    } catch {
+      window.prompt('Copy this world code:', code);
+    }
+  };
+
+  const importWorld = async () => {
+    const code = window.prompt('Paste a world code:');
+    if (!code?.trim()) return;
+    try {
+      const world = await worldFromCode(code);
+      worldRef.current = world;
+      simRef.current = prewarm(world);
+      setClipboard(null);
+      setSelectedId(null);
+      draw();
+    } catch {
+      window.alert('Could not read that world code.');
+    }
+  };
+
   // ---- info panel --------------------------------------------------------
 
   const renderPanel = () => {
@@ -635,7 +710,7 @@ export default function App() {
       const defs = type.params ?? [];
       return (
         <>
-          <h2>Edit: {hideLabels ? 'Machine' : type.name}</h2>
+          <h2>Edit: {type.name}</h2>
           {defs.length === 0 ? (
             <p className="rule dim">This machine has no adjustable parameters.</p>
           ) : (
@@ -674,11 +749,11 @@ export default function App() {
     if (hover?.kind === 'machine') {
       const machine = world.machines.find((m) => m.id === hover.machineId);
       if (!machine) return null;
-      if (hideLabels) {
+      if (!godMode) {
         return (
           <>
             <h2>Machine</h2>
-            <p className="rule dim">Labels are hidden, so this machine keeps its secrets.</p>
+            <p className="rule dim">This machine keeps its secrets.</p>
           </>
         );
       }
@@ -759,6 +834,12 @@ export default function App() {
           <li><b>Erase:</b> click/drag to wipe the highlighted region — pumps inside it are removed, and machines overlapping it even partially are removed whole.</li>
           <li>Hover anything to inspect its rule and live flows here.</li>
           <li>Blue edges are input ports, orange edges are output ports.</li>
+          {godMode && (
+            <li>
+              <b>God mode:</b> click a machine button to place one (<b>R</b> rotates), or use{' '}
+              <b>Edit</b> to tune a machine's parameters.
+            </li>
+          )}
         </ul>
       </>
     );
@@ -787,36 +868,67 @@ export default function App() {
         <button className={tool.kind === 'erase' ? 'active' : ''} onClick={() => setTool({ kind: 'erase' })}>
           Erase
         </button>
-        <button className={tool.kind === 'edit' ? 'active' : ''} onClick={() => setTool({ kind: 'edit' })}>
-          Edit
-        </button>
+        {godMode && (
+          <>
+            <button className={tool.kind === 'edit' ? 'active' : ''} onClick={() => setTool({ kind: 'edit' })}>
+              Edit
+            </button>
+            <span className="divider" />
+            {MACHINE_TYPES.map((mt) => (
+              <button
+                key={mt.id}
+                className={tool.kind === 'place' && tool.typeId === mt.id ? 'active' : ''}
+                style={{ borderBottomColor: mt.bodyColor }}
+                onClick={() => setTool({ kind: 'place', typeId: mt.id })}
+              >
+                {mt.name}
+              </button>
+            ))}
+          </>
+        )}
         <span className="spacer" />
-        <label className="slider">
-          Grid: {superSize}
-          <input
-            type="range"
-            min={2}
-            max={20}
-            value={superSize}
-            onChange={(e) => setSuperSize(Number(e.target.value))}
-          />
-        </label>
+        {godMode && (
+          <>
+            <label className="slider">
+              Grid: {superSize}
+              <input
+                type="range"
+                min={2}
+                max={20}
+                value={superSize}
+                onChange={(e) => setSuperSize(Number(e.target.value))}
+              />
+            </label>
+            <label className="slider" title="Gaussian blur applied outside god mode">
+              Blur: {blurPx.toFixed(1)}
+              <input
+                type="range"
+                min={0}
+                max={8}
+                step={0.5}
+                value={blurPx}
+                onChange={(e) => setBlurPx(Number(e.target.value))}
+              />
+            </label>
+          </>
+        )}
         <label className="checkbox">
-          <input type="checkbox" checked={hideLabels} onChange={(e) => setHideLabels(e.target.checked)} />
-          Hide labels
-        </label>
-        <label className="slider" title="Gaussian blur applied while labels are hidden">
-          Blur: {blurPx.toFixed(1)}
           <input
-            type="range"
-            min={0}
-            max={8}
-            step={0.5}
-            value={blurPx}
-            disabled={!hideLabels}
-            onChange={(e) => setBlurPx(Number(e.target.value))}
+            type="checkbox"
+            checked={godMode}
+            onChange={(e) => {
+              const god = e.target.checked;
+              setGodMode(god);
+              if (!god) {
+                setSelectedId(null);
+                setTool((t) => (t.kind === 'edit' || t.kind === 'place' ? { kind: 'pipe' } : t));
+              }
+            }}
           />
+          God mode
         </label>
+        <button onClick={exportWorld}>{exportLabel}</button>
+        <button onClick={importWorld}>Import</button>
         <button
           onClick={() => {
             const fresh = freshWorld();
@@ -834,7 +946,7 @@ export default function App() {
           ref={canvasRef}
           width={GRID_W * CELL}
           height={GRID_H * CELL}
-          style={{ filter: hideLabels && blurPx > 0 ? `blur(${blurPx}px)` : 'none' }}
+          style={{ filter: !godMode && blurPx > 0 ? `blur(${blurPx}px)` : 'none' }}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={endDrag}

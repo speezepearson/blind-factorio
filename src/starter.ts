@@ -45,8 +45,8 @@ export function buildStarterWorld(w: number, h: number): World {
   pipe([85, 42], [90, 42], [90, 62], [99, 62]); // first funnel -> second funnel
   pipe([61, 29], [61, 22], [97, 22], [97, 60], [99, 60]); // green spring -> second funnel
   pipe([115, 62], [124, 62]); // second funnel's blend -> filter
-  pipe([140, 60], [146, 60]); // filtrate (pulled toward green), spilling
-  pipe([140, 65], [146, 65]); // waste (pushed away from green), spilling
+  pipe([155, 60], [161, 60]); // filtrate (pulled toward green), spilling
+  pipe([155, 65], [161, 65]); // waste (pushed away from green), spilling
 
   return world;
 }

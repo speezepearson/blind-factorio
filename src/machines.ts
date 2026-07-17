@@ -141,13 +141,14 @@ export const MACHINE_TYPES: MachineType[] = [
     id: 'filter',
     name: 'Filter',
     bodyColor: '#e3d3d3',
-    // 3x2 rectangle: input on the west short side, filtrate out the east-top
-    // edge, waste out the east-bottom edge.
-    cells: scaleCells([[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]]),
+    // Lopsided sideways Y:  ---+--   input flows in the west end of the long
+    //                          '--   arm; filtrate continues straight out the
+    // east-top end, waste forks out the shorter east-bottom arm.
+    cells: scaleCells([[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [3, 1], [4, 1], [5, 1]]),
     ports: [
-      { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3], [[0, 1], 3]]) },
-      { id: 'near', label: 'B', kind: 'out', edges: scaleEdges([[[2, 0], 1]]) },
-      { id: 'far', label: 'C', kind: 'out', edges: scaleEdges([[[2, 1], 1]]) },
+      { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3]]) },
+      { id: 'near', label: 'B', kind: 'out', edges: scaleEdges([[[5, 0], 1]]) },
+      { id: 'far', label: 'C', kind: 'out', edges: scaleEdges([[[5, 1], 1]]) },
     ],
     params: [
       { key: 'strength', label: 'Strength', kind: 'number', default: 0.5, min: 0, max: 1, step: 0.05 },

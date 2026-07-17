@@ -18,6 +18,13 @@
   flex: 1;
 }
 
+.toolbar .divider {
+  width: 1px;
+  height: 22px;
+  background: #c9c5bc;
+  margin: 0 4px;
+}
+
 .toolbar button {
   font: 13px/1.2 var(--sans);
   padding: 6px 12px;
