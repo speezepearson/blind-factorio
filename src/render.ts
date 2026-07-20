@@ -5,9 +5,9 @@ import type { PlacedMachine } from './geom';
 import { SCALE, TYPE_BY_ID, paleTint, totalRate } from './machines';
 import { placeAll, pumpKey } from './sim';
 import type { SimState } from './sim';
-import { machinePlacementOk, squareTL } from './clipboard';
+import { machinePlacementOk, bboxTL } from './clipboard';
 import type { Clipboard } from './clipboard';
-import { traceWarpedRect } from './warp';
+import { SELECTION_RIPPLE_SALT, prepRipple, traceWarpedPoly } from './warp';
 import type { Obscura } from './warp';
 import type { Cell, Side, World } from './types';
 
@@ -20,7 +20,7 @@ export type Tool =
 
 export type DragState =
   | { mode: 'pipe'; path: Cell[] }
-  | { mode: 'erase'; last: Cell }
+  | { mode: 'lasso'; tool: 'copy' | 'erase'; points: Array<[number, number]> } // points in map px
   | { mode: 'move'; machineId: number; grab: Cell; moved?: boolean } // grab = cursor offset from origin
   | null;
 
@@ -208,48 +208,11 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     }
   }
 
-  // copy/paste and erase previews — the true cursor-centered square, but
-  // outside god mode its outline is warped through the world-locked noise
-  // field and blurred, so its exact position and edges can't be pinned down
+  // (the copy/erase/paste selection preview is NOT drawn here — see
+  // drawToolOverlay, which runs every compositor frame so the selection
+  // boundary can ripple in time)
   const t = view.tool;
   const hc = view.hoverCell;
-  if ((t.kind === 'copy' || t.kind === 'erase') && hc) {
-    const clip = t.kind === 'copy' ? view.clipboard : null;
-    const n = clip ? clip.size : view.copyCells;
-    const [tlx, tly] = squareTL(hc, n);
-    const [fill, line] =
-      t.kind === 'erase'
-        ? ['rgba(214, 60, 60, 0.14)', '#d63c3c']
-        : clip
-          ? ['rgba(47, 127, 209, 0.16)', '#2f7fd1']
-          : ['rgba(74, 70, 64, 0.13)', '#4a4640'];
-    ctx.save();
-    if (!view.godMode && view.obscura.toolBlur > 0) ctx.filter = `blur(${view.obscura.toolBlur * CELL}px)`;
-    const ampPx = view.godMode ? 0 : view.obscura.warpAmp * CELL;
-    if (ampPx > 0) {
-      traceWarpedRect(ctx, tlx * CELL, tly * CELL, n * CELL, n * CELL, ampPx, view.obscura.warpScale * CELL);
-    } else {
-      ctx.beginPath();
-      ctx.rect(tlx * CELL + 0.5, tly * CELL + 0.5, n * CELL, n * CELL);
-    }
-    ctx.fillStyle = fill;
-    ctx.fill();
-    if (clip?.snapshot) {
-      // ghost of what the copied region looked like at copy time, clipped to
-      // the (possibly warped) square
-      ctx.save();
-      ctx.clip();
-      ctx.globalAlpha = 0.55;
-      ctx.drawImage(clip.snapshot, tlx * CELL, tly * CELL, n * CELL, n * CELL);
-      ctx.restore();
-    }
-    ctx.strokeStyle = line;
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([5, 4]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
-  }
 
   // machine placement ghost (god mode)
   if (t.kind === 'place' && hc && !drag) {
@@ -281,4 +244,75 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     ctx.lineWidth = 1.5;
     ctx.strokeRect(hc[0] * CELL + 1, hc[1] * CELL + 1, CELL - 2, CELL - 2);
   }
+}
+
+// [fill, stroke] for a selection: erase red, paste blue, fresh copy grey
+const selectionColors = (tool: 'copy' | 'erase', clip: Clipboard | null): [string, string] =>
+  tool === 'erase'
+    ? ['rgba(214, 60, 60, 0.14)', '#d63c3c']
+    : clip
+      ? ['rgba(47, 127, 209, 0.16)', '#2f7fd1']
+      : ['rgba(74, 70, 64, 0.13)', '#4a4640'];
+
+// The copy/paste/erase selection preview, drawn onto the *visible* canvas
+// every compositor frame (on top of the lake warp). Outside god mode the
+// boundary is blurred, displaced through the world-locked static warp field,
+// and rippled by a differently-seeded copy of the lake's layered field — so
+// its drawn edge undulates in time and never quite agrees with the (also
+// warping) map beneath it. All cosmetic: the true selected cells are exact.
+export function drawToolOverlay(canvas: HTMLCanvasElement, view: ViewState, tSec: number): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const t = view.tool;
+  const drag = view.drag;
+  const lasso = drag?.mode === 'lasso' ? drag : null;
+  const hc = view.hoverCell;
+  if (!lasso && !((t.kind === 'copy' || t.kind === 'erase') && hc)) return;
+
+  const god = view.godMode;
+  const ampPx = god ? 0 : view.obscura.warpAmp * CELL;
+  const scalePx = view.obscura.warpScale * CELL;
+  const preps = god ? [] : prepRipple(view.obscura.lakeLayers, tSec, SELECTION_RIPPLE_SALT);
+
+  // Resolve what to draw: the in-progress lasso path, or the cursor-centered
+  // square / clipboard outline.
+  const clip = !lasso && t.kind === 'copy' ? view.clipboard : null;
+  let pts: Array<[number, number]>;
+  let ghost: { tlx: number; tly: number } | null = null;
+  let colors: [string, string];
+  if (lasso) {
+    pts = lasso.points;
+    colors = selectionColors(lasso.tool, null);
+  } else {
+    const w = clip ? clip.w : view.copyCells;
+    const h = clip ? clip.h : view.copyCells;
+    const [tlx, tly] = bboxTL(hc!, w, h);
+    const outline = clip
+      ? clip.outline
+      : ([[0, 0], [w * CELL, 0], [w * CELL, h * CELL], [0, h * CELL]] as Array<[number, number]>);
+    pts = outline.map(([x, y]) => [tlx * CELL + x, tly * CELL + y] as [number, number]);
+    if (clip?.snapshot) ghost = { tlx, tly };
+    colors = selectionColors(t.kind as 'copy' | 'erase', clip);
+  }
+
+  ctx.save();
+  if (!god && view.obscura.toolBlur > 0) ctx.filter = `blur(${view.obscura.toolBlur * CELL}px)`;
+  traceWarpedPoly(ctx, pts, ampPx, scalePx, preps);
+  ctx.fillStyle = colors[0];
+  ctx.fill();
+  if (ghost && clip?.snapshot) {
+    // ghost of what the copied region looked like at copy time, clipped to
+    // the (warped, rippling) outline
+    ctx.save();
+    ctx.clip();
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(clip.snapshot, ghost.tlx * CELL, ghost.tly * CELL, clip.w * CELL, clip.h * CELL);
+    ctx.restore();
+  }
+  ctx.strokeStyle = colors[1];
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
 }

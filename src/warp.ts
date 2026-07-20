@@ -68,6 +68,78 @@ export interface LakeLayer {
 export const lakeIsStill = (layers: LakeLayer[]): boolean =>
   layers.every((l) => l.magnitude <= 0 || l.wavelength <= 0);
 
+// A prepared per-frame snapshot of the layered ripple field: one entry per
+// active layer, with the drift/time offsets baked in and a per-frame cache of
+// lattice-corner values (they repeat across many samples).
+export interface RipplePrep {
+  ampPx: number;
+  scalePx: number;
+  ox: number;
+  oy: number;
+  z: number;
+  seedX: number;
+  seedY: number;
+  corners: Map<number, [number, number]>;
+}
+
+// Different seedSalts give statistically-identical but uncorrelated fields —
+// e.g. the selection boundary ripples like the lake but never agrees with it.
+export const SELECTION_RIPPLE_SALT = 0x6a09e667;
+
+export function prepRipple(layers: LakeLayer[], tSec: number, seedSalt = 0): RipplePrep[] {
+  return layers
+    .filter((l) => l.magnitude > 0 && l.wavelength > 0)
+    .map((l, li) => {
+      const rad = (l.waveDir * Math.PI) / 180;
+      return {
+        ampPx: l.magnitude * CELL,
+        scalePx: l.wavelength * CELL,
+        // sampling the field shifted by -t·v makes the pattern drift toward waveDir
+        ox: -tSec * l.waveSpeed * Math.cos(rad) * CELL,
+        oy: -tSec * l.waveSpeed * Math.sin(rad) * CELL,
+        z: tSec * l.timeScale,
+        seedX: (0x51ab3e97 ^ Math.imul(li + 1, 0x9e3779b9) ^ seedSalt) >>> 0,
+        seedY: (0x2c1b3c6d ^ Math.imul(li + 1, 0x85ebca6b) ^ seedSalt) >>> 0,
+        corners: new Map<number, [number, number]>(),
+      };
+    });
+}
+
+function cornerVec(p: RipplePrep, ix: number, iy: number): [number, number] {
+  const key = ix * 0x10000 + iy;
+  let v = p.corners.get(key);
+  if (!v) {
+    v = [cornerWave(ix, iy, p.z, p.seedX), cornerWave(ix, iy, p.z, p.seedY)];
+    p.corners.set(key, v);
+  }
+  return v;
+}
+
+// displacement (in px) of the summed ripple field at map-pixel (px, py)
+export function rippleAt(preps: RipplePrep[], px: number, py: number): [number, number] {
+  let dx = 0;
+  let dy = 0;
+  for (const p of preps) {
+    const nx = (px + p.ox) / p.scalePx;
+    const ny = (py + p.oy) / p.scalePx;
+    const ix = Math.floor(nx);
+    const iy = Math.floor(ny);
+    const fx = nx - ix;
+    const fy = ny - iy;
+    const sxw = fx * fx * (3 - 2 * fx);
+    const syw = fy * fy * (3 - 2 * fy);
+    const a = cornerVec(p, ix, iy);
+    const b = cornerVec(p, ix + 1, iy);
+    const c = cornerVec(p, ix, iy + 1);
+    const d = cornerVec(p, ix + 1, iy + 1);
+    const blend = (ch: 0 | 1) =>
+      a[ch] + (b[ch] - a[ch]) * sxw + (c[ch] - a[ch]) * syw + (a[ch] - b[ch] - c[ch] + d[ch]) * sxw * syw;
+    dx += (blend(0) * 2 - 1) * p.ampPx;
+    dy += (blend(1) * 2 - 1) * p.ampPx;
+  }
+  return [dx, dy];
+}
+
 // Composite `src` onto `dst` through the time-varying lake field (the sum of
 // all layers): each small tile of the destination samples the source
 // displaced by the field at that spot, like looking at the map through the
@@ -81,55 +153,10 @@ export function drawLakeWarped(
   if (!ctx) return;
   const w = src.width;
   const h = src.height;
-  const prep = layers
-    .filter((l) => l.magnitude > 0 && l.wavelength > 0)
-    .map((l, li) => {
-      const rad = (l.waveDir * Math.PI) / 180;
-      return {
-        ampPx: l.magnitude * CELL,
-        scalePx: l.wavelength * CELL,
-        // sampling the field shifted by -t·v makes the pattern drift toward waveDir
-        ox: -tSec * l.waveSpeed * Math.cos(rad) * CELL,
-        oy: -tSec * l.waveSpeed * Math.sin(rad) * CELL,
-        z: tSec * l.timeScale,
-        seedX: 0x51ab3e97 ^ Math.imul(li + 1, 0x9e3779b9),
-        seedY: 0x2c1b3c6d ^ Math.imul(li + 1, 0x85ebca6b),
-        // corner values repeat across many tiles; compute each once per frame
-        corners: new Map<number, [number, number]>(),
-      };
-    });
-  type Prep = (typeof prep)[number];
-  const cornerVec = (p: Prep, ix: number, iy: number): [number, number] => {
-    const key = ix * 0x10000 + iy;
-    let v = p.corners.get(key);
-    if (!v) {
-      v = [cornerWave(ix, iy, p.z, p.seedX), cornerWave(ix, iy, p.z, p.seedY)];
-      p.corners.set(key, v);
-    }
-    return v;
-  };
+  const preps = prepRipple(layers, tSec);
   for (let y = 0; y < h; y += LAKE_TILE) {
     for (let x = 0; x < w; x += LAKE_TILE) {
-      let dx = 0;
-      let dy = 0;
-      for (const p of prep) {
-        const nx = (x + LAKE_TILE / 2 + p.ox) / p.scalePx;
-        const ny = (y + LAKE_TILE / 2 + p.oy) / p.scalePx;
-        const ix = Math.floor(nx);
-        const iy = Math.floor(ny);
-        const fx = nx - ix;
-        const fy = ny - iy;
-        const sxw = fx * fx * (3 - 2 * fx);
-        const syw = fy * fy * (3 - 2 * fy);
-        const a = cornerVec(p, ix, iy);
-        const b = cornerVec(p, ix + 1, iy);
-        const c = cornerVec(p, ix, iy + 1);
-        const d = cornerVec(p, ix + 1, iy + 1);
-        const blend = (ch: 0 | 1) =>
-          a[ch] + (b[ch] - a[ch]) * sxw + (c[ch] - a[ch]) * syw + (a[ch] - b[ch] - c[ch] + d[ch]) * sxw * syw;
-        dx += (blend(0) * 2 - 1) * p.ampPx;
-        dy += (blend(1) * 2 - 1) * p.ampPx;
-      }
+      const [dx, dy] = rippleAt(preps, x + LAKE_TILE / 2, y + LAKE_TILE / 2);
       const sx = Math.max(0, Math.min(w - LAKE_TILE, x + dx));
       const sy = Math.max(0, Math.min(h - LAKE_TILE, y + dy));
       ctx.drawImage(src, sx, sy, LAKE_TILE, LAKE_TILE, x, y, LAKE_TILE, LAKE_TILE);
@@ -137,29 +164,32 @@ export function drawLakeWarped(
   }
 }
 
-// Set the current path to the rect with its perimeter displaced through the
-// warp field, sampled every few px so the wobble stays smooth.
-export function traceWarpedRect(
+// Set the current path to the closed polygon `pts` (in map px) with its
+// perimeter displaced through the static warp field plus the given ripple
+// field, sampled every few px so the wobble stays smooth.
+export function traceWarpedPoly(
   ctx: CanvasRenderingContext2D,
-  x: number, y: number, w: number, h: number,
+  pts: Array<[number, number]>,
   ampPx: number, scalePx: number,
+  preps: RipplePrep[],
 ): void {
-  const corners: Array<[number, number]> = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
   ctx.beginPath();
+  if (pts.length === 0) return;
   let first = true;
-  for (let i = 0; i < 4; i++) {
-    const [ax, ay] = corners[i];
-    const [bx, by] = corners[(i + 1) % 4];
+  for (let i = 0; i < pts.length; i++) {
+    const [ax, ay] = pts[i];
+    const [bx, by] = pts[(i + 1) % pts.length];
     const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 4));
     for (let s = 0; s < steps; s++) {
       const t = s / steps;
       const px = ax + (bx - ax) * t;
       const py = ay + (by - ay) * t;
-      const [dx, dy] = warpOffset(px, py, ampPx, scalePx);
+      const [wx, wy] = ampPx > 0 ? warpOffset(px, py, ampPx, scalePx) : [0, 0];
+      const [rx, ry] = rippleAt(preps, px, py);
       if (first) {
-        ctx.moveTo(px + dx, py + dy);
+        ctx.moveTo(px + wx + rx, py + wy + ry);
         first = false;
-      } else ctx.lineTo(px + dx, py + dy);
+      } else ctx.lineTo(px + wx + rx, py + wy + ry);
     }
   }
   ctx.closePath();
@@ -169,9 +199,9 @@ export function traceWarpedRect(
 // the world or how input maps to it.
 export interface Obscura {
   blurPx: number; // whole-canvas Gaussian blur, px
-  toolBlur: number; // blur on the copy/erase square, cells
-  warpAmp: number; // static tool-square edge warp amplitude, cells
-  warpScale: number; // feature size of the tool-square warp field, cells
+  toolBlur: number; // blur on the copy/erase selection, cells
+  warpAmp: number; // static selection-edge warp amplitude, cells
+  warpScale: number; // feature size of the selection warp field, cells
   lakeLayers: LakeLayer[];
 }
 

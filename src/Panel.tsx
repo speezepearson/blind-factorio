@@ -161,9 +161,9 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
           </ul>
         ) : (
           <ul className="help">
-            <li>Click to copy the {copySize}×{copySize}-cell square centered on the cursor.</li>
-            <li>Any machine overlapping the square — even partially — is copied whole.</li>
-            <li>Use the slider to change the square size.</li>
+            <li>Drag a lasso around whatever you want to copy, or click to copy the {copySize}×{copySize}-cell square centered on the cursor.</li>
+            <li>Any machine overlapping the selection — even partially — is copied whole.</li>
+            <li>Use the slider to change the click-square size.</li>
           </ul>
         )}
       </>
@@ -174,8 +174,8 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
       <h2>Sandbox</h2>
       <ul className="help">
         <li><b>Pipes:</b> click-drag to draw a line of pumps — you can start the drag on a machine. Drag backwards to undo.</li>
-        <li><b>Copy/paste:</b> stamp out squares of factory, machines included.</li>
-        <li><b>Erase:</b> click/drag to wipe the highlighted region — pumps inside it are removed, and machines overlapping it even partially are removed whole.</li>
+        <li><b>Copy/paste:</b> lasso (or click a square around) a patch of factory to stamp out elsewhere, machines included.</li>
+        <li><b>Erase:</b> lasso (or click a square around) a region to wipe — pumps inside it are removed, and machines overlapping it even partially are removed whole.</li>
         <li>Hover anything to inspect its rule and live flows here.</li>
         <li>Blue edges are input ports, orange edges are output ports.</li>
         {godMode && (

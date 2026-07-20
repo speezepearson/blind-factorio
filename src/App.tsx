@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  CELL, GRID_H, GRID_W, cellKey, machineCellMap, mergePumps, orientPath, parseKey, placeMachine,
+  CELL, GRID_H, GRID_W, cellKey, machineCellMap, mergePumps, orientPath, placeMachine,
 } from './geom';
 import { MACHINE_TYPES, TYPE_BY_ID } from './machines';
 import { emptySim, placeAll, step } from './sim';
@@ -9,12 +9,12 @@ import { worldFromCode, worldToCode } from './serialize';
 import { buildStarterWorld } from './starter';
 import type { Cell, Machine, ParamDef, ParamValue, World } from './types';
 import {
-  captureRegion, machinePlacementOk, pasteClipboard, rotateClipboard, squareTL,
+  bboxTL, captureRegion, lassoRegion, machinePlacementOk, pasteClipboard, rotateClipboard, squareRegion,
 } from './clipboard';
-import type { Clipboard } from './clipboard';
+import type { Clipboard, Region } from './clipboard';
 import { DEFAULT_OBSCURA, drawLakeWarped, lakeIsStill } from './warp';
 import type { Obscura } from './warp';
-import { drawWorld } from './render';
+import { drawToolOverlay, drawWorld } from './render';
 import type { DragState, Tool, ViewState } from './render';
 import { Panel } from './Panel';
 import type { Hover } from './Panel';
@@ -137,6 +137,16 @@ export default function App() {
     return [x, y];
   };
 
+  // cursor position in map px, clamped to the canvas (for lasso paths)
+  const eventPx = (e: { clientX: number; clientY: number }): [number, number] | null => {
+    const cv = canvasRef.current;
+    if (!cv) return null;
+    const rect = cv.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * GRID_W * CELL;
+    const y = ((e.clientY - rect.top) / rect.height) * GRID_H * CELL;
+    return [Math.max(0, Math.min(GRID_W * CELL, x)), Math.max(0, Math.min(GRID_H * CELL, y))];
+  };
+
   const updateHover = (cell: Cell | null) => {
     hoverCellRef.current = cell;
     let next: Hover = null;
@@ -149,19 +159,17 @@ export default function App() {
     setHover((h) => (hoverKey(h) === hoverKey(next) ? h : next));
   };
 
-  // Wipe the copy-sized square centered on the cursor: pumps inside it go,
-  // and machines overlapping it even partially go whole.
-  const eraseRegion = (anchor: Cell) => {
-    const n = copySizeRef.current;
-    const tl = squareTL(anchor, n);
+  // Wipe a region: pumps inside it go, and machines overlapping it even
+  // partially go whole.
+  const eraseRegion = (region: Region) => {
     const world = worldRef.current;
-    const inSquare = ([x, y]: Cell) =>
-      x >= tl[0] && x < tl[0] + n && y >= tl[1] && y < tl[1] + n;
     for (const k of [...world.pumps.keys()]) {
-      if (inSquare(parseKey(k))) world.pumps.delete(k);
+      if (region.cells.has(k)) world.pumps.delete(k);
     }
     const doomed = new Set(
-      placeAll(world).filter((pm) => pm.cells.some(inSquare)).map((pm) => pm.machine.id),
+      placeAll(world)
+        .filter((pm) => pm.cells.some(([x, y]) => region.cells.has(cellKey(x, y))))
+        .map((pm) => pm.machine.id),
     );
     if (doomed.size > 0) world.machines = world.machines.filter((m) => !doomed.has(m.id));
   };
@@ -198,23 +206,42 @@ export default function App() {
 
   // ---- copy/paste --------------------------------------------------------
 
-  // Photograph the copied region (with the tool overlay suppressed) for use
-  // as the paste ghost. Reads the offscreen world canvas, so the snapshot is
-  // unaffected by the lake warp.
-  const snapshotRegion = (cell: Cell): HTMLCanvasElement | undefined => {
-    const n = copySizeRef.current;
-    const [tlx, tly] = squareTL(cell, n);
-    const px = n * CELL;
-    const prevHover = hoverCellRef.current;
-    hoverCellRef.current = null;
-    draw();
+  // Photograph the copied region's bounding box for use as the paste ghost.
+  // Reads the offscreen world canvas, so the snapshot is unaffected by the
+  // lake warp (and tool overlays, which are drawn on the visible canvas).
+  const snapshotRegion = (region: Region): HTMLCanvasElement | undefined => {
     const snap = document.createElement('canvas');
-    snap.width = px;
-    snap.height = px;
-    snap.getContext('2d')!.drawImage(worldCanvas(), tlx * CELL, tly * CELL, px, px, 0, 0, px, px);
-    hoverCellRef.current = prevHover;
-    draw();
+    snap.width = region.w * CELL;
+    snap.height = region.h * CELL;
+    snap.getContext('2d')!.drawImage(
+      worldCanvas(),
+      region.tl[0] * CELL, region.tl[1] * CELL, snap.width, snap.height,
+      0, 0, snap.width, snap.height,
+    );
     return snap;
+  };
+
+  // A copy/erase gesture ends: a click (no real movement) selects the
+  // slider-sized square centered on the cursor; a drag selects whatever the
+  // lassoed loop encloses.
+  const commitLasso = (lasso: { tool: 'copy' | 'erase'; points: Array<[number, number]> }) => {
+    const pts = lasso.points;
+    const [sx, sy] = pts[0];
+    const isClick = pts.every(([x, y]) => Math.hypot(x - sx, y - sy) < CELL * 1.5);
+    const anchor: Cell = [
+      Math.min(GRID_W - 1, Math.floor(sx / CELL)),
+      Math.min(GRID_H - 1, Math.floor(sy / CELL)),
+    ];
+    const region = isClick ? squareRegion(anchor, copySizeRef.current) : lassoRegion(pts);
+    if (!region) return;
+    if (lasso.tool === 'erase') {
+      checkpoint();
+      eraseRegion(region);
+    } else {
+      const captured = captureRegion(worldRef.current, region);
+      captured.snapshot = snapshotRegion(region);
+      setClipboard(captured);
+    }
   };
 
   // ---- drawing -----------------------------------------------------------
@@ -233,31 +260,36 @@ export default function App() {
     return worldCanvasRef.current;
   };
 
+  const currentView = (): ViewState => ({
+    world: worldRef.current,
+    sim: simRef.current,
+    godMode: godModeRef.current,
+    obscura: obscuraRef.current,
+    copyCells: copySizeRef.current,
+    tool: toolRef.current,
+    hoverCell: hoverCellRef.current,
+    drag: dragRef.current,
+    clipboard: clipboardRef.current,
+    selectedId: selectedIdRef.current,
+    placeRotation: placeRotationRef.current,
+  });
+
   const composite = () => {
     const cv = canvasRef.current;
     if (!cv) return;
+    const tSec = performance.now() / 1000;
     if (godModeRef.current || lakeIsStill(obscuraRef.current.lakeLayers)) {
       cv.getContext('2d')!.drawImage(worldCanvas(), 0, 0);
     } else {
-      drawLakeWarped(cv, worldCanvas(), performance.now() / 1000, obscuraRef.current.lakeLayers);
+      drawLakeWarped(cv, worldCanvas(), tSec, obscuraRef.current.lakeLayers);
     }
+    // tool overlays live on the visible canvas so their boundaries can
+    // ripple at frame rate, independent of the lake beneath them
+    drawToolOverlay(cv, currentView(), tSec);
   };
 
   const draw = () => {
-    const view: ViewState = {
-      world: worldRef.current,
-      sim: simRef.current,
-      godMode: godModeRef.current,
-      obscura: obscuraRef.current,
-      copyCells: copySizeRef.current,
-      tool: toolRef.current,
-      hoverCell: hoverCellRef.current,
-      drag: dragRef.current,
-      clipboard: clipboardRef.current,
-      selectedId: selectedIdRef.current,
-      placeRotation: placeRotationRef.current,
-    };
-    drawWorld(worldCanvas(), view);
+    drawWorld(worldCanvas(), currentView());
     composite();
   };
 
@@ -329,9 +361,8 @@ export default function App() {
       // starting on a machine is fine: pumps appear once the drag leaves it
       dragRef.current = { mode: 'pipe', path: [cell] };
     } else if (t.kind === 'erase') {
-      checkpoint();
-      dragRef.current = { mode: 'erase', last: cell };
-      eraseRegion(cell);
+      const p = eventPx(e);
+      if (p) dragRef.current = { mode: 'lasso', tool: 'erase', points: [p] };
     } else if (t.kind === 'edit') {
       const pm = machineCellMap(placeAll(worldRef.current)).get(cellKey(cell[0], cell[1]));
       setSelectedId(pm ? pm.machine.id : null);
@@ -359,12 +390,10 @@ export default function App() {
       const clip = clipboardRef.current;
       if (clip) {
         checkpoint();
-        pasteClipboard(worldRef.current, squareTL(cell, clip.size), clip);
+        pasteClipboard(worldRef.current, bboxTL(cell, clip.w, clip.h), clip);
       } else {
-        const n = copySizeRef.current;
-        const captured = captureRegion(worldRef.current, squareTL(cell, n), n);
-        captured.snapshot = snapshotRegion(cell);
-        setClipboard(captured);
+        const p = eventPx(e);
+        if (p) dragRef.current = { mode: 'lasso', tool: 'copy', points: [p] };
       }
     }
     draw();
@@ -400,23 +429,21 @@ export default function App() {
           }
         }
       }
-    } else if (cell && drag?.mode === 'erase') {
-      // interpolate so fast drags don't skip fine-grid cells
-      let [lx, ly] = drag.last;
-      while (lx !== cell[0] || ly !== cell[1]) {
-        if (lx !== cell[0]) lx += Math.sign(cell[0] - lx);
-        else ly += Math.sign(cell[1] - ly);
-        eraseRegion([lx, ly]);
+    } else if (drag?.mode === 'lasso') {
+      const p = eventPx(e);
+      if (p) {
+        const [lx, ly] = drag.points[drag.points.length - 1];
+        if (Math.hypot(p[0] - lx, p[1] - ly) >= 2) drag.points.push(p);
       }
-      drag.last = cell;
     }
     draw();
   };
 
   const endDrag = () => {
     const drag = dragRef.current;
-    if (drag?.mode === 'pipe') commitPipePath(drag.path);
     dragRef.current = null;
+    if (drag?.mode === 'pipe') commitPipePath(drag.path);
+    else if (drag?.mode === 'lasso') commitLasso(drag);
     draw();
   };
 

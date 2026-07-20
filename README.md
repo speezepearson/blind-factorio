@@ -47,16 +47,17 @@ npm run lint    # oxlint
 | `src/App.tsx` | The UI shell: tools, mouse handling, undo/redo, world sharing. |
 | `src/warp.ts` | How we lie to the player: warp noise, the tool-square edge warp, the lake compositor, and the `Obscura` settings bundle. |
 | `src/render.ts` | Canvas rendering of the world + tool overlays. |
-| `src/clipboard.ts` | Copy/paste/rotate of world regions. |
+| `src/clipboard.ts` | Regions (squares or lassoed blobs: bbox + cell set + outline polygon) and copy/paste/rotate of them. |
 | `src/Panel.tsx` | The inspector/help side panel. |
 | `src/LakeEditor.tsx` | The god-mode table for editing lake ripple layers. |
 
 ## UI architecture (read before touching App.tsx)
 
 The world is **deliberately not React state**. `worldRef.current` is mutated in place by
-tool gestures; a 110 ms interval advances the sim and redraws imperatively — the world and
-tool overlays render to an *offscreen* canvas, and a requestAnimationFrame loop composites
-that onto the visible canvas (through the time-varying "lake" warp outside god mode);
+tool gestures; a 110 ms interval advances the sim and redraws imperatively — the world
+renders to an *offscreen* canvas, and a requestAnimationFrame loop composites that onto
+the visible canvas (through the time-varying "lake" warp outside god mode), then draws
+the copy/erase/paste selection overlay on top so its boundary can ripple at frame rate;
 a `setTick` counter forces React re-renders only so the side panel shows live values.
 Every piece of state the draw loop needs is shadowed in a ref (`toolRef`, `godModeRef`, …)
 so the interval and mouse handlers never close over stale values. React state proper only
@@ -69,16 +70,19 @@ Two views of the same world:
   identities/labels/ports, placement buttons, dragging machines (Edit tool), param
   sliders, blur/warp sliders.
 - **Player view**: no grid lines at all, anonymous grey machines, Gaussian-blurred canvas,
-  inspector refuses to identify machines. The copy/erase square is honestly centered on
-  the cursor, but its drawn outline is displaced through a world-locked smooth noise
-  field ("Warp" amplitude + "Warp scale" sliders, in cells) and Gaussian-blurred ("Tool
-  blur" slider) — so the blob wobbles as it moves and its exact position and edges can't
-  be pinned down. On top of that, the whole map view is composited through a
+  inspector refuses to identify machines. Copy and erase **free-select**: drag a lasso
+  around whatever you want (a click still selects the slider-sized square centered on the
+  cursor). The selection is honest — the lassoed cells are exactly what's copied/erased —
+  but its drawn boundary is displaced through a world-locked smooth noise field ("Warp"
+  amplitude + "Warp scale" sliders, in cells), rippled in time by a differently-seeded
+  copy of the lake's layered field (so the boundary never visually agrees with a fixed
+  patch of map), and Gaussian-blurred ("Tool blur" slider) — its exact position and edges
+  can't be pinned down. On top of that, the whole map view is composited through a
   time-evolving warp field, like watching the factory through the surface of a lake —
   a sum of noise layers, each with its own wave direction/speed (drift), magnitude,
-  wavelength, and time scale, edited in the collapsible "Lake ripple layers" table. All of this is cosmetic; the affected region
-  stays a perfect square, the world never moves, and mouse input maps to the true grid.
-  Imprecision-by-fog is a core game-feel experiment.
+  wavelength, and time scale, edited in the collapsible "Lake ripple layers" table.
+  All of this is cosmetic; the selected cells are exact, the world never moves, and
+  mouse input maps to the true grid. Imprecision-by-fog is a core game-feel experiment.
 
 ## Sharing
 
