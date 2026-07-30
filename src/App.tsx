@@ -62,6 +62,7 @@ export default function App() {
   const simRef = useRef<SimState>(initial.sim);
 
   const [tool, setTool] = useState<Tool>({ kind: 'pipe' });
+  const [simSpeed, setSimSpeed] = useState(1); // sim time-scale: ticks/sec multiplier
   const [copySize, setCopySize] = useState(19); // copy square side, in fine cells (odd)
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   // God mode = the designer's view: labels, fine grid, machine placement,
@@ -304,12 +305,20 @@ export default function App() {
 
   // ---- lifecycle ---------------------------------------------------------
 
+  // The sim tick. simSpeed only changes how often ticks fire in real time —
+  // each tick still advances TICK_MS of sim time, so the dynamics are
+  // identical at every speed, just faster or slower on the wall clock.
   useEffect(() => {
     const iv = setInterval(() => {
       simRef.current = step(worldRef.current, simRef.current, TICK_MS / 1000);
       setTick((t) => t + 1);
       draw();
-    }, TICK_MS);
+    }, TICK_MS / simSpeed);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simSpeed]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault();
@@ -338,7 +347,6 @@ export default function App() {
       raf = requestAnimationFrame(loop);
     });
     return () => {
-      clearInterval(iv);
       window.removeEventListener('keydown', onKey);
       cancelAnimationFrame(raf);
     };
@@ -545,6 +553,15 @@ export default function App() {
         <button disabled={redoRef.current.length === 0} onClick={redo} title="Ctrl+Shift+Z">
           Redo
         </button>
+        <Slider
+          label={`Speed: ${simSpeed}×`}
+          title="Sim speed — ticks come faster, but each tick is unchanged"
+          min={0.25}
+          max={8}
+          step={0.25}
+          value={simSpeed}
+          onChange={setSimSpeed}
+        />
         {godMode && (
           <>
             <button className={tool.kind === 'edit' ? 'active' : ''} onClick={() => setTool({ kind: 'edit' })}>

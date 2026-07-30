@@ -54,7 +54,8 @@ npm run lint    # oxlint
 ## UI architecture (read before touching App.tsx)
 
 The world is **deliberately not React state**. `worldRef.current` is mutated in place by
-tool gestures; a 110 ms interval advances the sim and redraws imperatively — the world
+tool gestures; a 110 ms interval (divided by the toolbar Speed multiplier — ticks come
+faster but each tick is unchanged) advances the sim and redraws imperatively — the world
 renders to an *offscreen* canvas, and a requestAnimationFrame loop composites that onto
 the visible canvas (through the time-varying "lake" warp outside god mode), then draws
 the copy/erase/paste selection overlay on top so its boundary can ripple at frame rate;
