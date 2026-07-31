@@ -25,7 +25,8 @@
   margin: 0 4px;
 }
 
-.toolbar button {
+.toolbar button,
+.toolbar select {
   font: 13px/1.2 var(--sans);
   padding: 6px 12px;
   border-radius: 6px;

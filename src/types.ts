@@ -4,12 +4,9 @@ export type Side = 0 | 1 | 2 | 3;
 export type Cell = [number, number];
 
 // A fluid "color" is a CSS color string; a FluidMap is color -> rate in L/s.
+// Pipes, ports, and machine outputs all carry whole FluidMaps: a stream is a
+// mixture of pigments, and only *draws* as their rate-weighted average.
 export type FluidMap = Record<string, number>;
-
-export interface Flow {
-  color: string;
-  rate: number;
-}
 
 // An edge of the shape: a cell (in shape-local coords) plus which side of it.
 export type Edge = [Cell, Side];
@@ -58,6 +55,9 @@ export interface MachineType {
   ) => Record<string, FluidMap>;
   // optional one-line live summary of the machine's internal state
   describeState?: (state: Record<string, unknown>) => string;
+  // optional halo color while the machine is in a special state (e.g. a
+  // satisfied sink); null = no glow. Visible even in the player view.
+  glow?: (state: Record<string, unknown>) => string | null;
 }
 
 export interface Machine {

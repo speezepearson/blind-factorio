@@ -25,11 +25,17 @@ npm run lint    # oxlint
 - Each fine cell is blank, part of a machine, or holds pumps. A cell can hold **two**
   crossing straight pumps (one per axis); a bent pump claims the whole cell (`mergePumps`).
 - Machines have ports (contiguous runs of perimeter edges) and a `compute` function from
-  per-port inputs to per-port outputs. Fluids are CSS hex colors; a port's output is split
-  evenly among the pumps drawing from it. Machine types: spring (emits its color param),
-  reactor (conditional rule with color tolerances), funnel (rate-weighted color blend),
-  filter (mirror-split toward/away from a target color; conserves rate × color), buffer
-  (stateful: fills to capacity, then drains at a fixed rate).
+  per-port inputs to per-port outputs. Fluids are CSS hex colors, and every stream — in a
+  pump or at a port — is a whole **mixture** (`FluidMap`: color → L/s). A pipe *draws* as
+  the rate-weighted average of what it carries, so `{magenta: 2}` and `{red: 1, blue: 1}`
+  are visually indistinguishable but mechanically different. A port's output is split
+  evenly among the pumps drawing from it. Machine types: spring (emits a one- or
+  two-pigment mixture), reactor (conditional rule with color tolerances), funnel (merges
+  streams, passes the mixture through untouched), blender (irreversibly collapses a
+  mixture into one pigment of its average color), filter (splits a mixture by pigment
+  near/far from a target color; cannot split a single pigment), buffer (stateful: fills
+  to capacity, then drains its stored mixture proportionally), sink (slurps everything,
+  glows while the incoming mixture's pigment composition matches its target mixture).
 - The sim ticks synchronously every 110 ms (`TICK_MS`); pump-to-pump flow advances one
   cell per tick, machine outputs are recomputed each tick from the previous tick's pump
   contents. `step()` is a pure function `(world, prevSim, dt) -> nextSim`.
@@ -43,6 +49,7 @@ npm run lint    # oxlint
 | `src/machines.ts` | The machine-type catalog + color math. **To add a machine type, append one object here** — shape (coarse cells via `scaleCells`), ports, editable params, `compute`, optional `describeState`. Everything else (placement, rendering, editing, serialization) picks it up automatically. |
 | `src/sim.ts` | The tick function. Owns per-machine persistent state (`ComputeCtx.state`) for stateful machines. |
 | `src/starter.ts` | The pre-built demo factory the app boots into. |
+| `src/presets.ts` | The "Load preset…" worlds, e.g. "Magenta, two ways" (lookalike sources/sinks that only the right pigments satisfy). |
 | `src/serialize.ts` | World ↔ URL-safe base64 deflated JSON, for Export/Import/`#world=` links. |
 | `src/App.tsx` | The UI shell: tools, mouse handling, undo/redo, world sharing. |
 | `src/warp.ts` | How we lie to the player: warp noise, the tool-square edge warp, the lake compositor, and the `Obscura` settings bundle. |

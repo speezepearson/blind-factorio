@@ -7,6 +7,7 @@ import { emptySim, placeAll, step } from './sim';
 import type { SimState } from './sim';
 import { worldFromCode, worldToCode } from './serialize';
 import { buildStarterWorld } from './starter';
+import { PRESETS } from './presets';
 import type { Cell, Machine, ParamDef, ParamValue, World } from './types';
 import {
   bboxTL, captureRegion, lassoRegion, machinePlacementOk, pasteClipboard, rotateClipboard, squareRegion,
@@ -632,7 +633,22 @@ export default function App() {
         <button onClick={shareWorld}>{shareLabel}</button>
         <button onClick={exportWorld}>{exportLabel}</button>
         <button onClick={importWorld}>Import</button>
-        <button onClick={() => adoptWorld(buildStarterWorld(GRID_W, GRID_H))}>Reset world</button>
+        <select
+          value=""
+          onChange={(e) => {
+            const preset = PRESETS.find((p) => p.id === e.target.value);
+            if (preset) adoptWorld(preset.build(GRID_W, GRID_H));
+          }}
+        >
+          <option value="" disabled>
+            Load preset…
+          </option>
+          {PRESETS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
       </div>
       {godMode && (
         <LakeEditor

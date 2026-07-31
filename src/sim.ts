@@ -1,7 +1,7 @@
 import { DX, DY, cellKey, opposite, parseKey, placeMachine } from './geom';
 import type { PlacedMachine } from './geom';
-import { TYPE_BY_ID, dominant } from './machines';
-import type { Flow, FluidMap, ParamValue, Pump, Side, World } from './types';
+import { TYPE_BY_ID } from './machines';
+import type { FluidMap, ParamValue, Pump, Side, World } from './types';
 
 const EPS = 1e-4;
 const RATE_CAP = 1000;
@@ -10,7 +10,7 @@ const RATE_CAP = 1000;
 export const pumpKey = (x: number, y: number, p: Pump) => `${x},${y}#${p.inSide}${p.outSide}`;
 
 export interface SimState {
-  pumpFluids: Map<string, Flow | null>; // keyed by pumpKey
+  pumpFluids: Map<string, FluidMap>; // keyed by pumpKey; a pump carries a whole mixture
   machineIO: Map<number, { inputs: Record<string, FluidMap>; outputs: Record<string, FluidMap> }>;
   machineStates: Map<number, Record<string, unknown>>; // per-machine persistent state
 }
@@ -26,6 +26,11 @@ export const placeAll = (world: World): PlacedMachine[] =>
 
 function addFluid(into: FluidMap, color: string, rate: number) {
   if (rate > EPS) into[color] = (into[color] ?? 0) + rate;
+}
+
+function addFluids(into: FluidMap, from: FluidMap | undefined) {
+  if (!from) return;
+  for (const [color, rate] of Object.entries(from)) addFluid(into, color, rate);
 }
 
 // One synchronous propagation step. Machine port inputs are read from last
@@ -54,10 +59,7 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
         const nx = x + DX[side];
         const ny = y + DY[side];
         const p = outToward(nx, ny, opposite(side));
-        if (p) {
-          const f = prev.pumpFluids.get(pumpKey(nx, ny, p));
-          if (f) addFluid(fm, f.color, f.rate);
-        }
+        if (p) addFluids(fm, prev.pumpFluids.get(pumpKey(nx, ny, p)));
       }
       inputs[port.def.id] = fm;
     }
@@ -106,17 +108,14 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
       const fm: FluidMap = {};
 
       const np = outToward(nx, ny, opposite(s));
-      if (np) {
-        const f = prev.pumpFluids.get(pumpKey(nx, ny, np));
-        if (f) addFluid(fm, f.color, f.rate);
-      }
+      if (np) addFluids(fm, prev.pumpFluids.get(pumpKey(nx, ny, np)));
       const src = emitting.get(`${nx},${ny},${opposite(s)}`);
       if (src) {
         const share = Math.max(1, src.consumers);
         for (const [color, rate] of Object.entries(src.fluids)) addFluid(fm, color, rate / share);
       }
 
-      pumpFluids.set(pumpKey(x, y, pump), dominant(fm));
+      pumpFluids.set(pumpKey(x, y, pump), fm);
     }
   }
 

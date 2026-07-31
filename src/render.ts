@@ -2,7 +2,7 @@ import {
   CELL, DX, DY, GRID_H, GRID_W, cellKey, machineCellMap, orientPath, parseKey, perimeterSegments, placeMachine,
 } from './geom';
 import type { PlacedMachine } from './geom';
-import { SCALE, TYPE_BY_ID, paleTint, totalRate } from './machines';
+import { SCALE, TYPE_BY_ID, paleTint, totalRate, weightedMix } from './machines';
 import { placeAll, pumpKey } from './sim';
 import type { SimState } from './sim';
 import { machinePlacementOk, bboxTL } from './clipboard';
@@ -114,8 +114,10 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     const [x, y] = parseKey(k);
     drawPumpBase(x, y);
     for (const pump of list) {
-      const f = sim.pumpFluids.get(pumpKey(x, y, pump)) ?? null;
-      drawPumpArrow(x, y, pump.inSide, pump.outSide, f?.color ?? null, f?.rate ?? 0);
+      // a pump carries a mixture; it draws as the rate-weighted average color
+      const fm = sim.pumpFluids.get(pumpKey(x, y, pump));
+      const rate = totalRate(fm);
+      drawPumpArrow(x, y, pump.inSide, pump.outSide, rate > 1e-4 ? weightedMix(fm!) : null, rate);
     }
   }
 
@@ -128,6 +130,22 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     const body = typeof paramColor === 'string' ? paleTint(paramColor) : pm.type.bodyColor;
     ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#dcd8cf' : body;
     for (const [x, y] of pm.cells) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    // glow halo (e.g. a satisfied sink) — deliberately visible to the player
+    const glow = pm.type.glow?.(sim.machineStates.get(pm.machine.id) ?? {});
+    if (glow) {
+      ctx.save();
+      ctx.strokeStyle = glow;
+      ctx.lineWidth = 6;
+      ctx.shadowColor = glow;
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      for (const [x0, y0, x1, y1] of perimeterSegments(pm.cells, CELL)) {
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
     // outline the perimeter
     ctx.strokeStyle = '#4a4640';
     ctx.lineWidth = 2;

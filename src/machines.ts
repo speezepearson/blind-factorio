@@ -1,22 +1,4 @@
-import type { Cell, Edge, Flow, FluidMap, MachineType } from './types';
-
-export const RED = '#d63c3c';
-export const GREEN = '#3aa845';
-export const BLACK = '#23272e';
-
-export const FLUID_NAMES: Record<string, string> = {
-  [RED]: 'red',
-  [GREEN]: 'green',
-  [BLACK]: 'black',
-};
-
-export function dominant(fm: FluidMap): Flow | null {
-  let best: Flow | null = null;
-  for (const [color, rate] of Object.entries(fm)) {
-    if (rate > 1e-4 && (!best || rate > best.rate)) best = { color, rate };
-  }
-  return best;
-}
+import type { Cell, Edge, FluidMap, MachineType } from './types';
 
 export function totalRate(fm: FluidMap | undefined): number {
   if (!fm) return 0;
@@ -29,14 +11,17 @@ const parseHex = (h: string): number[] => [1, 3, 5].map((i) => parseInt(h.slice(
 // possible RGB distance (black to white).
 const MAX_COLOR_DIST = Math.sqrt(3) * 255;
 
+const colorDist = (a: string, b: string): number => {
+  const ca = parseHex(a);
+  const cb = parseHex(b);
+  return Math.hypot(ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]) / MAX_COLOR_DIST;
+};
+
 // Total rate of fluid whose color lies within `tolerance` (0..1) of target.
 function rateNear(fm: FluidMap, target: string, tolerance: number): number {
-  const t = parseHex(target);
   let sum = 0;
   for (const [color, rate] of Object.entries(fm)) {
-    const c = parseHex(color);
-    const d = Math.hypot(c[0] - t[0], c[1] - t[1], c[2] - t[2]) / MAX_COLOR_DIST;
-    if (d <= tolerance + 1e-9) sum += rate;
+    if (colorDist(color, target) <= tolerance + 1e-9) sum += rate;
   }
   return sum;
 }
@@ -46,9 +31,11 @@ function toHexColor(rgb: number[]): string {
   return `#${c(rgb[0])}${c(rgb[1])}${c(rgb[2])}`;
 }
 
-// Blend a FluidMap's colors into one, weighted by their rates.
-function weightedMix(fm: FluidMap): string {
+// Blend a FluidMap's colors into one, weighted by their rates. This is what a
+// mixture *looks* like flowing in a pipe.
+export function weightedMix(fm: FluidMap): string {
   const total = totalRate(fm);
+  if (total <= 0) return '#000000';
   const rgb = [0, 0, 0];
   for (const [color, rate] of Object.entries(fm)) {
     const [r, g, b] = parseHex(color);
@@ -58,6 +45,23 @@ function weightedMix(fm: FluidMap): string {
   }
   return toHexColor(rgb);
 }
+
+export const RED = '#d63c3c';
+export const GREEN = '#3aa845';
+export const BLUE = '#3c50d6';
+export const BLACK = '#23272e';
+// The exact pigment a red+blue mixture *looks* like: a pipe carrying
+// {MAGENTA: 2} and a pipe carrying {RED: 1, BLUE: 1} are indistinguishable
+// by eye — but they are different fluids.
+export const MAGENTA = weightedMix({ [RED]: 1, [BLUE]: 1 });
+
+export const FLUID_NAMES: Record<string, string> = {
+  [RED]: 'red',
+  [GREEN]: 'green',
+  [BLUE]: 'blue',
+  [BLACK]: 'black',
+  [MAGENTA]: 'magenta',
+};
 
 // Machine shapes are authored on a coarse grid and expanded onto the real
 // (5x finer) grid, so each authored cell becomes a SCALE x SCALE block and
@@ -93,6 +97,19 @@ export function paleTint(hex: string): string {
   return toHexColor([r + (255 - r) * 0.72, g + (255 - g) * 0.72, b + (255 - b) * 0.72]);
 }
 
+const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+
+// target mixture from a two-color + share parametrization (shares sum to 1)
+function targetMixture(colorA: string, colorB: string, mixB: number): FluidMap {
+  const t: FluidMap = {};
+  const add = (color: string, share: number) => {
+    if (share > 1e-6) t[color] = (t[color] ?? 0) + share;
+  };
+  add(colorA, 1 - mixB);
+  add(colorB, mixB);
+  return t;
+}
+
 export const MACHINE_TYPES: MachineType[] = [
   {
     id: 'spring',
@@ -105,11 +122,23 @@ export const MACHINE_TYPES: MachineType[] = [
     params: [
       { key: 'rate', label: 'Production rate (L/s)', kind: 'number', default: 2, min: 0, max: 10, step: 0.1 },
       { key: 'color', label: 'Fluid color', kind: 'color', default: RED },
+      { key: 'colorB', label: 'Fluid color B', kind: 'color', default: RED },
+      { key: 'mixB', label: 'Share of color B', kind: 'number', default: 0, min: 0, max: 1, step: 0.05 },
     ],
     ruleText:
-      'Produces fluid of its configured color at its configured rate at port A ' +
-      '(defaults: red, 2 L/s). Needs no inputs.',
-    compute: (_inputs, params) => ({ out: { [String(params.color)]: Number(params.rate) } }),
+      'Produces fluid at its configured rate at port A: a mixture of its two configured ' +
+      'colors in the configured shares (share 0 = pure color A, the default). Needs no inputs.',
+    compute: (_inputs, params): Record<string, FluidMap> => {
+      const rate = Number(params.rate);
+      const mix = clamp01(Number(params.mixB));
+      const out: FluidMap = {};
+      for (const [color, share] of Object.entries(
+        targetMixture(String(params.color), String(params.colorB), mix),
+      )) {
+        out[color] = rate * share;
+      }
+      return { out };
+    },
   },
   {
     id: 'reactor',
@@ -145,12 +174,27 @@ export const MACHINE_TYPES: MachineType[] = [
     bodyColor: '#f4e3bc',
     cells: scaleCells([[0, 0], [1, 0], [2, 0], [0, 1]]),
     ports: [
+      { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3], [[0, 1], 3]]) },
+      { id: 'out', label: 'B', kind: 'out', edges: scaleEdges([[[2, 0], 1]]) },
+    ],
+    ruleText:
+      'Merges every stream arriving at port A and passes the combined mixture out ' +
+      'port B, untouched: every pigment keeps its identity and rate.',
+    compute: (inputs): Record<string, FluidMap> => ({ out: { ...(inputs.in ?? {}) } }),
+  },
+  {
+    id: 'blender',
+    name: 'Blender',
+    bodyColor: '#cfe3c9',
+    cells: scaleCells([[0, 0], [1, 0], [2, 0], [1, 1]]),
+    ports: [
       { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3]]) },
       { id: 'out', label: 'B', kind: 'out', edges: scaleEdges([[[2, 0], 1]]) },
     ],
     ruleText:
-      'Port B outputs everything arriving at port A: same total rate, blended into ' +
-      'a single color weighted by rate.',
+      'Irreversibly blends the mixture arriving at port A into a single new pigment: ' +
+      'same total rate, color = the rate-weighted average. The mixture already looked ' +
+      'like that color in the pipe — after the blender, it really is one fluid.',
     compute: (inputs): Record<string, FluidMap> => {
       const fm = inputs.in ?? {};
       const total = totalRate(fm);
@@ -172,33 +216,22 @@ export const MACHINE_TYPES: MachineType[] = [
       { id: 'far', label: 'C', kind: 'out', edges: scaleEdges([[[5, 1], 1]]) },
     ],
     params: [
-      { key: 'strength', label: 'Strength', kind: 'number', default: 0.5, min: 0, max: 1, step: 0.05 },
       { key: 'target', label: 'Target color', kind: 'color', default: RED },
+      { key: 'tol', label: 'Color tolerance', kind: 'number', default: 0.2, min: 0, max: 1, step: 0.01 },
     ],
     ruleText:
-      'Mixes its input like a funnel, then splits it in half. Port B carries the mixture ' +
-      'pulled strength-of-the-way toward the target color; port C carries the mirror image, ' +
-      'pushed equally far away. Strength self-limits so C stays a real color — total ' +
-      'pigment (rate × color) is conserved.',
+      'Splits the incoming mixture by pigment: components within its color tolerance of ' +
+      'the target color flow out port B, everything else out port C. Rates are conserved; ' +
+      'it cannot split a single pigment (a blended magenta is not red + blue).',
     compute: (inputs, params): Record<string, FluidMap> => {
-      const fm = inputs.in ?? {};
-      const total = totalRate(fm);
-      if (total <= 1e-4) return {};
-      const m = parseHex(weightedMix(fm));
-      const t = parseHex(String(params.target));
-      let s = Math.max(0, Math.min(1, Number(params.strength)));
-      // largest strength for which the mirror color stays inside RGB gamut
-      for (let i = 0; i < 3; i++) {
-        const d = t[i] - m[i];
-        if (d > 0) s = Math.min(s, m[i] / d);
-        else if (d < 0) s = Math.min(s, (255 - m[i]) / -d);
+      const near: FluidMap = {};
+      const far: FluidMap = {};
+      const target = String(params.target);
+      const tol = Number(params.tol);
+      for (const [color, rate] of Object.entries(inputs.in ?? {})) {
+        (colorDist(color, target) <= tol + 1e-9 ? near : far)[color] = rate;
       }
-      const near = m.map((v, i) => v + s * (t[i] - m[i]));
-      const far = m.map((v, i) => v - s * (t[i] - m[i]));
-      return {
-        near: { [toHexColor(near)]: total / 2 },
-        far: { [toHexColor(far)]: total / 2 },
-      };
+      return { near, far };
     },
   },
   {
@@ -216,9 +249,9 @@ export const MACHINE_TYPES: MachineType[] = [
     ],
     ruleText:
       'Accepts fluid at port A, remembering everything it takes in, until it holds ' +
-      'capacity liters. Then it stops accepting and dumps its contents — blended into ' +
-      'one color — out port B at its drain rate until empty, whereupon it starts ' +
-      'accepting again.',
+      'capacity liters. Then it stops accepting and dumps its contents — the stored ' +
+      'mixture, in proportion — out port B at its drain rate until empty, whereupon ' +
+      'it starts accepting again.',
     compute: (inputs, params, ctx): Record<string, FluidMap> => {
       const st = ctx.state as { stored?: FluidMap; draining?: boolean };
       const stored = (st.stored ??= {});
@@ -239,19 +272,74 @@ export const MACHINE_TYPES: MachineType[] = [
         return {};
       }
       const rate = Math.min(Math.max(0, Number(params.drainRate)), held / ctx.dt);
-      const color = weightedMix(stored);
+      const out: FluidMap = {};
+      for (const [color, amt] of Object.entries(stored)) out[color] = (rate * amt) / held;
       const keep = 1 - (rate * ctx.dt) / held;
       for (const k of Object.keys(stored)) {
         stored[k] *= keep;
         if (stored[k] <= 1e-9) delete stored[k];
       }
-      return { out: { [color]: rate } };
+      return { out };
     },
     describeState: (state) => {
       const stored = (state.stored as FluidMap | undefined) ?? {};
       const held = totalRate(stored);
       return `Holding ${held.toFixed(1)} L, ${state.draining ? 'draining' : 'filling'}.`;
     },
+  },
+  {
+    id: 'sink',
+    name: 'Sink',
+    bodyColor: '#b9b2a6',
+    cells: scaleCells([[0, 0], [1, 0], [0, 1], [1, 1]]),
+    ports: [
+      {
+        id: 'in',
+        label: 'A',
+        kind: 'in',
+        edges: scaleEdges([
+          [[0, 0], 0], [[1, 0], 0],
+          [[1, 0], 1], [[1, 1], 1],
+          [[0, 1], 2], [[1, 1], 2],
+          [[0, 0], 3], [[0, 1], 3],
+        ]),
+      },
+    ],
+    params: [
+      { key: 'colorA', label: 'Target color A', kind: 'color', default: MAGENTA },
+      { key: 'colorB', label: 'Target color B', kind: 'color', default: MAGENTA },
+      { key: 'mixB', label: 'Share of color B', kind: 'number', default: 0, min: 0, max: 1, step: 0.05 },
+      { key: 'tol', label: 'Color tolerance', kind: 'number', default: 0.12, min: 0, max: 1, step: 0.01 },
+    ],
+    ruleText:
+      'Slurps up everything fed into any side. Lights up while the incoming mixture ' +
+      'matches its target mixture (two colors in configured shares): each target ' +
+      "component must make up its share of what's arriving, judged by pigment within " +
+      'the color tolerance — the right-looking color made of the wrong pigments stays ' +
+      'dark. Needs at least 0.5 L/s in total.',
+    compute: (inputs, params, ctx): Record<string, FluidMap> => {
+      const fm = inputs.in ?? {};
+      const total = totalRate(fm);
+      const target = targetMixture(
+        String(params.colorA), String(params.colorB), clamp01(Number(params.mixB)),
+      );
+      let score = 0;
+      for (const [color, share] of Object.entries(target)) {
+        const got = total > 1e-4 ? rateNear(fm, color, Number(params.tol)) / total : 0;
+        score += Math.min(share, got);
+      }
+      const st = ctx.state as { rate?: number; score?: number; lit?: boolean };
+      st.rate = total;
+      st.score = score;
+      st.lit = total >= 0.5 && score >= 0.85;
+      return {};
+    },
+    describeState: (state) => {
+      const rate = (state.rate as number | undefined) ?? 0;
+      const score = (state.score as number | undefined) ?? 0;
+      return `Drinking ${rate.toFixed(2)} L/s — ${Math.round(score * 100)}% match, ${state.lit ? 'LIT' : 'dark'}.`;
+    },
+    glow: (state) => (state.lit ? '#ffd84a' : null),
   },
 ];
 

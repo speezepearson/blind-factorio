@@ -131,17 +131,14 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
     return (
       <>
         <h2>{list.length > 1 ? 'Crossing pumps' : 'Pump'}</h2>
-        {list.map((pump) => {
-          const f = sim.pumpFluids.get(pumpKey(x, y, pump));
-          return (
-            <div key={`${pump.inSide}${pump.outSide}`}>
-              <p className="rule">
-                Pulls from its {SIDE_NAMES[pump.inSide]} side, pushes out its {SIDE_NAMES[pump.outSide]} side.
-              </p>
-              <p>{f ? <FluidList fm={{ [f.color]: f.rate }} /> : <span className="dim">empty</span>}</p>
-            </div>
-          );
-        })}
+        {list.map((pump) => (
+          <div key={`${pump.inSide}${pump.outSide}`}>
+            <p className="rule">
+              Pulls from its {SIDE_NAMES[pump.inSide]} side, pushes out its {SIDE_NAMES[pump.outSide]} side.
+            </p>
+            <p><FluidList fm={sim.pumpFluids.get(pumpKey(x, y, pump))} /></p>
+          </div>
+        ))}
       </>
     );
   }
