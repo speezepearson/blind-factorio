@@ -2,7 +2,8 @@ import {
   CELL, DX, DY, GRID_H, GRID_W, cellKey, machineCellMap, orientPath, parseKey, perimeterSegments, placeMachine,
 } from './geom';
 import type { PlacedMachine } from './geom';
-import { SCALE, TYPE_BY_ID, paleTint, totalRate, weightedMix } from './machines';
+import { SCALE, TYPE_BY_ID, paleTint, totalRate } from './machines';
+import { mixtureColor, wavelengthColor } from './light';
 import { placeAll, pumpKey } from './sim';
 import type { SimState } from './sim';
 import { machinePlacementOk, bboxTL } from './clipboard';
@@ -89,7 +90,8 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     const cx = x * CELL + CELL / 2;
     const cy = y * CELL + CELL / 2;
     ctx.strokeStyle = color;
-    ctx.lineWidth = fluidColor ? Math.min(4, 1.5 + 0.7 * Math.log2(1 + rate)) : 1.5;
+    // width goes as the square root of the flow rate
+    ctx.lineWidth = fluidColor ? Math.min(CELL, Math.max(1.2, 1.6 * Math.sqrt(rate))) : 1.5;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
@@ -114,20 +116,21 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     const [x, y] = parseKey(k);
     drawPumpBase(x, y);
     for (const pump of list) {
-      // a pump carries a mixture; it draws as the rate-weighted average color
+      // a pump carries a mixture; it draws as the combined light of every
+      // wavelength in it (which may be the unlit grey, if it's all infrared)
       const fm = sim.pumpFluids.get(pumpKey(x, y, pump));
       const rate = totalRate(fm);
-      drawPumpArrow(x, y, pump.inSide, pump.outSide, rate > 1e-4 ? weightedMix(fm!) : null, rate);
+      drawPumpArrow(x, y, pump.inSide, pump.outSide, rate > 1e-4 ? mixtureColor(fm) : null, rate);
     }
   }
 
   const drawMachine = (pm: PlacedMachine, alpha = 1, invalid = false) => {
     const hidden = !view.godMode;
     ctx.globalAlpha = alpha;
-    // a machine with a color param wears a pale tint of its configured color
-    const colorDef = pm.type.params?.find((pd) => pd.kind === 'color');
-    const paramColor = colorDef ? pm.machine.params?.[colorDef.key] ?? colorDef.default : null;
-    const body = typeof paramColor === 'string' ? paleTint(paramColor) : pm.type.bodyColor;
+    // a machine with a wavelength param wears a pale tint of that light
+    const colorDef = pm.type.params?.find((pd) => pd.kind === 'wavelength');
+    const paramWl = colorDef ? pm.machine.params?.[colorDef.key] ?? colorDef.default : null;
+    const body = paramWl !== null ? paleTint(wavelengthColor(Number(paramWl))) : pm.type.bodyColor;
     ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#dcd8cf' : body;
     for (const [x, y] of pm.cells) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
     // glow halo (e.g. a satisfied sink) — deliberately visible to the player

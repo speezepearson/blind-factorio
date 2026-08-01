@@ -1,4 +1,3 @@
-import { BLUE, MAGENTA, RED } from './machines';
 import { buildStarterWorld } from './starter';
 import type { Cell, ParamValue, World } from './types';
 
@@ -12,26 +11,27 @@ function emptyWorld(w: number, h: number): World {
   return { w, h, pumps: new Map(), machines: [], nextMachineId: 1 };
 }
 
-// Two sources and two sinks, all four of which *look* magenta. One source is
-// pure magenta pigment, the other is red + blue flowing together — visually
-// identical in a pipe. Each sink wants one of those mixtures and lights up
-// only when fed the right pigments, so the player has to work out which
-// lookalike is which (a blender turns red+blue into true magenta; nothing
-// turns magenta back).
-function buildMagentaWorld(w: number, h: number): World {
+// Two sources and two sinks, all four of which *look* the same chartreuse
+// green. One source is pure 556 nm light; the other is red 650 nm + green
+// 540 nm flowing together, whose combined light is nearly identical. Each
+// sink wants one of those mixtures and lights up only when fed the right
+// wavelengths, so the player has to work out which lookalike is which (a
+// blender averages 650+540 into ~595 nm orange — visibly different! — so
+// telling them apart is possible, but takes thought).
+function buildLookalikeWorld(w: number, h: number): World {
   const world = emptyWorld(w, h);
   const add = (typeId: string, origin: Cell, params?: Record<string, ParamValue>) => {
     world.machines.push({ id: world.nextMachineId++, typeId, origin, rotation: 0, params });
   };
-  add('spring', [20, 25], { color: MAGENTA });
-  add('spring', [20, 70], { color: RED, colorB: BLUE, mixB: 0.5 });
-  add('sink', [135, 25], { colorA: RED, colorB: BLUE, mixB: 0.5 });
-  add('sink', [135, 70], { colorA: MAGENTA });
+  add('spring', [20, 25], { color: 556 });
+  add('spring', [20, 70], { color: 650, colorB: 540, mixB: 0.5 });
+  add('sink', [135, 25], { colorA: 650, colorB: 540, mixB: 0.5, tol: 12 });
+  add('sink', [135, 70], { colorA: 556, tol: 12 });
   return world;
 }
 
 export const PRESETS: Preset[] = [
   { id: 'starter', name: 'Starter tour', build: buildStarterWorld },
-  { id: 'magenta', name: 'Magenta, two ways', build: buildMagentaWorld },
+  { id: 'lookalike', name: 'Green, two ways', build: buildLookalikeWorld },
   { id: 'blank', name: 'Blank canvas', build: emptyWorld },
 ];

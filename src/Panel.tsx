@@ -1,5 +1,6 @@
 import { SIDE_NAMES, parseKey, placeMachine } from './geom';
-import { FLUID_NAMES, TYPE_BY_ID } from './machines';
+import { TYPE_BY_ID } from './machines';
+import { wavelengthColor, wavelengthName } from './light';
 import { pumpKey } from './sim';
 import type { SimState } from './sim';
 import type { Clipboard } from './clipboard';
@@ -8,17 +9,15 @@ import type { FluidMap, Machine, ParamDef, ParamValue, World } from './types';
 
 export type Hover = { kind: 'machine'; machineId: number } | { kind: 'pump'; key: string } | null;
 
-const fluidName = (color: string) => FLUID_NAMES[color] ?? color;
-
 function FluidList({ fm }: { fm: FluidMap | undefined }) {
   const entries = Object.entries(fm ?? {}).filter(([, r]) => r > 1e-4).sort((a, b) => b[1] - a[1]);
   if (entries.length === 0) return <span className="dim">—</span>;
   return (
     <>
-      {entries.map(([color, rate]) => (
-        <span key={color} className="fluid">
-          <span className="swatch" style={{ background: color }} />
-          {rate.toFixed(2)} L/s {fluidName(color)}
+      {entries.map(([wl, rate]) => (
+        <span key={wl} className="fluid">
+          <span className="swatch" style={{ background: wavelengthColor(Number(wl)) }} />
+          {rate.toFixed(2)} L/s {wl} nm ({wavelengthName(Number(wl))})
         </span>
       ))}
     </>
@@ -62,22 +61,17 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
             return (
               <label key={pd.key} className="param">
                 {pd.label}: <b>{String(value)}</b>
-                {pd.kind === 'color' ? (
-                  <input
-                    type="color"
-                    value={String(value)}
-                    onChange={(e) => set(e.target.value)}
-                  />
-                ) : (
-                  <input
-                    type="range"
-                    min={pd.min}
-                    max={pd.max}
-                    step={pd.step}
-                    value={Number(value)}
-                    onChange={(e) => set(Number(e.target.value))}
-                  />
+                {pd.kind === 'wavelength' && (
+                  <span className="swatch" style={{ background: wavelengthColor(Number(value)) }} />
                 )}
+                <input
+                  type="range"
+                  min={pd.min}
+                  max={pd.max}
+                  step={pd.step}
+                  value={Number(value)}
+                  onChange={(e) => set(Number(e.target.value))}
+                />
               </label>
             );
           })

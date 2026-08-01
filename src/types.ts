@@ -3,9 +3,10 @@ export type Side = 0 | 1 | 2 | 3;
 
 export type Cell = [number, number];
 
-// A fluid "color" is a CSS color string; a FluidMap is color -> rate in L/s.
-// Pipes, ports, and machine outputs all carry whole FluidMaps: a stream is a
-// mixture of pigments, and only *draws* as their rate-weighted average.
+// A fluid is identified by its light wavelength in nm (stored as the string
+// key); a FluidMap is wavelength -> rate in L/s. Pipes, ports, and machine
+// outputs all carry whole FluidMaps: a stream is a mixture of wavelengths,
+// and only *draws* as their combined light (see light.ts).
 export type FluidMap = Record<string, number>;
 
 // An edge of the shape: a cell (in shape-local coords) plus which side of it.
@@ -19,13 +20,14 @@ export interface PortDef {
 }
 
 // A tunable per-machine-instance parameter, e.g. a spring's production rate
-// (kind 'number') or its fluid color (kind 'color', a hex string).
+// (kind 'number') or a fluid wavelength (kind 'wavelength', 400-800 nm,
+// shown as a slider with a live color swatch).
 export type ParamValue = number | string;
 
 export interface ParamDef {
   key: string;
   label: string;
-  kind: 'number' | 'color';
+  kind: 'number' | 'wavelength';
   default: ParamValue;
   min?: number;
   max?: number;

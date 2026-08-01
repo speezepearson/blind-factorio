@@ -1,5 +1,4 @@
 import { cellKey, mergePumps, orientPath } from './geom';
-import { GREEN } from './machines';
 import type { Cell, ParamValue, World } from './types';
 
 // Walk axis-aligned segments between waypoints, returning every cell passed.
@@ -31,12 +30,12 @@ export function buildStarterWorld(w: number, h: number): World {
     }
   };
 
-  add('spring', [20, 30]); // red by default
-  add('spring', [55, 30], { color: GREEN });
+  add('spring', [20, 30]); // 650 nm red by default
+  add('spring', [55, 30], { color: 540 }); // green
   add('reactor', [38, 58]);
   add('funnel', [70, 40]);
   add('funnel', [100, 60]);
-  add('filter', [125, 58], { target: GREEN });
+  add('filter', [125, 58], { target: 540 });
   add('buffer', [150, 76]);
 
   pipe([25, 29], [25, 26], [33, 26], [33, 62], [37, 62]); // red spring -> reactor A

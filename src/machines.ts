@@ -1,3 +1,4 @@
+import { WL_MAX, WL_MIN } from './light';
 import type { Cell, Edge, FluidMap, MachineType } from './types';
 
 export function totalRate(fm: FluidMap | undefined): number {
@@ -5,63 +6,31 @@ export function totalRate(fm: FluidMap | undefined): number {
   return Object.values(fm).reduce((a, b) => a + b, 0);
 }
 
-const parseHex = (h: string): number[] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+// a param value as a sane wavelength (old worlds may hold junk)
+export function asWavelength(v: unknown, fallback = 650): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(WL_MIN, Math.min(WL_MAX, Math.round(n))) : fallback;
+}
 
-// Distances between colors are expressed as a fraction of the largest
-// possible RGB distance (black to white).
-const MAX_COLOR_DIST = Math.sqrt(3) * 255;
-
-const colorDist = (a: string, b: string): number => {
-  const ca = parseHex(a);
-  const cb = parseHex(b);
-  return Math.hypot(ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]) / MAX_COLOR_DIST;
-};
-
-// Total rate of fluid whose color lies within `tolerance` (0..1) of target.
-function rateNear(fm: FluidMap, target: string, tolerance: number): number {
+// Total rate of fluid whose wavelength lies within `tolNm` of target.
+function rateNear(fm: FluidMap, targetWl: number, tolNm: number): number {
   let sum = 0;
-  for (const [color, rate] of Object.entries(fm)) {
-    if (colorDist(color, target) <= tolerance + 1e-9) sum += rate;
+  for (const [wl, rate] of Object.entries(fm)) {
+    if (Math.abs(Number(wl) - targetWl) <= tolNm + 1e-9) sum += rate;
   }
   return sum;
 }
 
-function toHexColor(rgb: number[]): string {
-  const c = (n: number) => Math.round(Math.max(0, Math.min(255, n))).toString(16).padStart(2, '0');
-  return `#${c(rgb[0])}${c(rgb[1])}${c(rgb[2])}`;
-}
-
-// Blend a FluidMap's colors into one, weighted by their rates. This is what a
-// mixture *looks* like flowing in a pipe.
-export function weightedMix(fm: FluidMap): string {
-  const total = totalRate(fm);
-  if (total <= 0) return '#000000';
-  const rgb = [0, 0, 0];
-  for (const [color, rate] of Object.entries(fm)) {
-    const [r, g, b] = parseHex(color);
-    rgb[0] += (r * rate) / total;
-    rgb[1] += (g * rate) / total;
-    rgb[2] += (b * rate) / total;
+// rate-weighted average wavelength of a mixture
+function meanWavelength(fm: FluidMap): number {
+  let sum = 0;
+  let total = 0;
+  for (const [wl, rate] of Object.entries(fm)) {
+    sum += Number(wl) * rate;
+    total += rate;
   }
-  return toHexColor(rgb);
+  return Math.round(sum / total);
 }
-
-export const RED = '#d63c3c';
-export const GREEN = '#3aa845';
-export const BLUE = '#3c50d6';
-export const BLACK = '#23272e';
-// The exact pigment a red+blue mixture *looks* like: a pipe carrying
-// {MAGENTA: 2} and a pipe carrying {RED: 1, BLUE: 1} are indistinguishable
-// by eye — but they are different fluids.
-export const MAGENTA = weightedMix({ [RED]: 1, [BLUE]: 1 });
-
-export const FLUID_NAMES: Record<string, string> = {
-  [RED]: 'red',
-  [GREEN]: 'green',
-  [BLUE]: 'blue',
-  [BLACK]: 'black',
-  [MAGENTA]: 'magenta',
-};
 
 // Machine shapes are authored on a coarse grid and expanded onto the real
 // (5x finer) grid, so each authored cell becomes a SCALE x SCALE block and
@@ -91,24 +60,36 @@ function scaleEdges(edges: Edge[]): Edge[] {
   });
 }
 
-// Pale version of a fluid color, used to tint a machine body by its color param.
+const parseHex = (h: string): number[] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+
+// Pale version of a color, used to tint a machine body by its wavelength param.
 export function paleTint(hex: string): string {
   const [r, g, b] = parseHex(hex);
-  return toHexColor([r + (255 - r) * 0.72, g + (255 - g) * 0.72, b + (255 - b) * 0.72]);
+  const c = (n: number) => Math.round(Math.max(0, Math.min(255, n))).toString(16).padStart(2, '0');
+  const mix = (v: number) => v + (255 - v) * 0.72;
+  return `#${c(mix(r))}${c(mix(g))}${c(mix(b))}`;
 }
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
-// target mixture from a two-color + share parametrization (shares sum to 1)
-function targetMixture(colorA: string, colorB: string, mixB: number): FluidMap {
+// target mixture from a two-wavelength + share parametrization (shares sum to 1)
+function targetMixture(wlA: number, wlB: number, mixB: number): FluidMap {
   const t: FluidMap = {};
-  const add = (color: string, share: number) => {
-    if (share > 1e-6) t[color] = (t[color] ?? 0) + share;
+  const add = (wl: number, share: number) => {
+    if (share > 1e-6) t[wl] = (t[wl] ?? 0) + share;
   };
-  add(colorA, 1 - mixB);
-  add(colorB, mixB);
+  add(wlA, 1 - mixB);
+  add(wlB, mixB);
   return t;
 }
+
+// the full perimeter of a scaled 2x2 shape, for machines open on every side
+const RING_2X2: Edge[] = scaleEdges([
+  [[0, 0], 0], [[1, 0], 0],
+  [[1, 0], 1], [[1, 1], 1],
+  [[0, 1], 2], [[1, 1], 2],
+  [[0, 0], 3], [[0, 1], 3],
+]);
 
 export const MACHINE_TYPES: MachineType[] = [
   {
@@ -117,25 +98,25 @@ export const MACHINE_TYPES: MachineType[] = [
     bodyColor: '#f0c9c9',
     cells: scaleCells([[0, 0], [1, 0], [0, 1], [1, 1]]),
     ports: [
-      { id: 'out', label: 'A', kind: 'out', edges: scaleEdges([[[0, 0], 0], [[1, 0], 0]]) },
+      { id: 'out', label: 'A', kind: 'out', edges: RING_2X2 },
     ],
     params: [
       { key: 'rate', label: 'Production rate (L/s)', kind: 'number', default: 2, min: 0, max: 10, step: 0.1 },
-      { key: 'color', label: 'Fluid color', kind: 'color', default: RED },
-      { key: 'colorB', label: 'Fluid color B', kind: 'color', default: RED },
-      { key: 'mixB', label: 'Share of color B', kind: 'number', default: 0, min: 0, max: 1, step: 0.05 },
+      { key: 'color', label: 'Wavelength (nm)', kind: 'wavelength', default: 650, min: WL_MIN, max: WL_MAX, step: 1 },
+      { key: 'colorB', label: 'Wavelength B (nm)', kind: 'wavelength', default: 650, min: WL_MIN, max: WL_MAX, step: 1 },
+      { key: 'mixB', label: 'Share of B', kind: 'number', default: 0, min: 0, max: 1, step: 0.05 },
     ],
     ruleText:
-      'Produces fluid at its configured rate at port A: a mixture of its two configured ' +
-      'colors in the configured shares (share 0 = pure color A, the default). Needs no inputs.',
+      'Produces fluid at its configured rate, offered from every edge (port A spans the ' +
+      'whole perimeter): a mixture of its two wavelengths in the configured shares ' +
+      '(share 0 = pure wavelength A, the default). Needs no inputs.',
     compute: (_inputs, params): Record<string, FluidMap> => {
       const rate = Number(params.rate);
-      const mix = clamp01(Number(params.mixB));
       const out: FluidMap = {};
-      for (const [color, share] of Object.entries(
-        targetMixture(String(params.color), String(params.colorB), mix),
+      for (const [wl, share] of Object.entries(
+        targetMixture(asWavelength(params.color), asWavelength(params.colorB), clamp01(Number(params.mixB))),
       )) {
-        out[color] = rate * share;
+        out[wl] = rate * share;
       }
       return { out };
     },
@@ -154,17 +135,20 @@ export const MACHINE_TYPES: MachineType[] = [
       { id: 'out', label: 'C', kind: 'out', edges: [[[2, 0], 0]] },
     ],
     params: [
-      { key: 'tolA', label: 'Port A red tolerance', kind: 'number', default: 0.15, min: 0, max: 1, step: 0.01 },
-      { key: 'tolB', label: 'Port B green tolerance', kind: 'number', default: 0.15, min: 0, max: 1, step: 0.01 },
+      { key: 'wlA', label: 'Port A wavelength (nm)', kind: 'wavelength', default: 650, min: WL_MIN, max: WL_MAX, step: 1 },
+      { key: 'tolA', label: 'Port A tolerance (nm)', kind: 'number', default: 30, min: 0, max: 200, step: 1 },
+      { key: 'wlB', label: 'Port B wavelength (nm)', kind: 'wavelength', default: 540, min: WL_MIN, max: WL_MAX, step: 1 },
+      { key: 'tolB', label: 'Port B tolerance (nm)', kind: 'number', default: 30, min: 0, max: 200, step: 1 },
+      { key: 'wlOut', label: 'Output wavelength (nm)', kind: 'wavelength', default: 460, min: WL_MIN, max: WL_MAX, step: 1 },
     ],
     ruleText:
-      'If port A receives at least 1 L/s of fluid within its tolerance of red, and port B ' +
-      'receives any fluid within its tolerance of green, port C produces 1 − e^(−green rate) ' +
-      'L/s of black fluid. Tolerances are fractions of the black-to-white color distance.',
+      'If port A receives at least 1 L/s within its tolerance of its wavelength, and ' +
+      'port B receives any fluid within its tolerance of its wavelength, port C produces ' +
+      '1 − e^(−B rate) L/s at the output wavelength.',
     compute: (inputs, params): Record<string, FluidMap> => {
-      const red = rateNear(inputs.a ?? {}, RED, Number(params.tolA));
-      const green = rateNear(inputs.b ?? {}, GREEN, Number(params.tolB));
-      if (red >= 1 && green > 1e-4) return { out: { [BLACK]: 1 - Math.exp(-green) } };
+      const a = rateNear(inputs.a ?? {}, asWavelength(params.wlA), Number(params.tolA));
+      const b = rateNear(inputs.b ?? {}, asWavelength(params.wlB, 540), Number(params.tolB));
+      if (a >= 1 && b > 1e-4) return { out: { [asWavelength(params.wlOut, 460)]: 1 - Math.exp(-b) } };
       return {};
     },
   },
@@ -179,7 +163,7 @@ export const MACHINE_TYPES: MachineType[] = [
     ],
     ruleText:
       'Merges every stream arriving at port A and passes the combined mixture out ' +
-      'port B, untouched: every pigment keeps its identity and rate.',
+      'port B, untouched: every wavelength keeps its identity and rate.',
     compute: (inputs): Record<string, FluidMap> => ({ out: { ...(inputs.in ?? {}) } }),
   },
   {
@@ -192,14 +176,15 @@ export const MACHINE_TYPES: MachineType[] = [
       { id: 'out', label: 'B', kind: 'out', edges: scaleEdges([[[2, 0], 1]]) },
     ],
     ruleText:
-      'Irreversibly blends the mixture arriving at port A into a single new pigment: ' +
-      'same total rate, color = the rate-weighted average. The mixture already looked ' +
-      'like that color in the pipe — after the blender, it really is one fluid.',
+      'Irreversibly homogenizes the mixture arriving at port A into a single fluid at ' +
+      'the rate-weighted average wavelength, same total rate. Warning: average ' +
+      'wavelength is not average color — red + violet light looks pink, but their ' +
+      'average wavelength is green.',
     compute: (inputs): Record<string, FluidMap> => {
       const fm = inputs.in ?? {};
       const total = totalRate(fm);
       if (total <= 1e-4) return {};
-      return { out: { [weightedMix(fm)]: total } };
+      return { out: { [meanWavelength(fm)]: total } };
     },
   },
   {
@@ -207,8 +192,8 @@ export const MACHINE_TYPES: MachineType[] = [
     name: 'Filter',
     bodyColor: '#e3d3d3',
     // Lopsided sideways Y:  ---+--   input flows in the west end of the long
-    //                          '--   arm; filtrate continues straight out the
-    // east-top end, waste forks out the shorter east-bottom arm.
+    //                          '--   arm; the passband continues straight out
+    // the east-top end, the rest forks out the shorter east-bottom arm.
     cells: scaleCells([[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [3, 1], [4, 1], [5, 1]]),
     ports: [
       { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3]]) },
@@ -216,20 +201,20 @@ export const MACHINE_TYPES: MachineType[] = [
       { id: 'far', label: 'C', kind: 'out', edges: scaleEdges([[[5, 1], 1]]) },
     ],
     params: [
-      { key: 'target', label: 'Target color', kind: 'color', default: RED },
-      { key: 'tol', label: 'Color tolerance', kind: 'number', default: 0.2, min: 0, max: 1, step: 0.01 },
+      { key: 'target', label: 'Center wavelength (nm)', kind: 'wavelength', default: 650, min: WL_MIN, max: WL_MAX, step: 1 },
+      { key: 'tol', label: 'Band half-width (nm)', kind: 'number', default: 40, min: 0, max: 200, step: 1 },
     ],
     ruleText:
-      'Splits the incoming mixture by pigment: components within its color tolerance of ' +
-      'the target color flow out port B, everything else out port C. Rates are conserved; ' +
-      'it cannot split a single pigment (a blended magenta is not red + blue).',
+      'A band-pass filter: components of the incoming mixture within the band ' +
+      '(center ± half-width) flow out port B, everything else out port C. Rates are ' +
+      'conserved; it cannot split a single homogenized fluid back apart.',
     compute: (inputs, params): Record<string, FluidMap> => {
       const near: FluidMap = {};
       const far: FluidMap = {};
-      const target = String(params.target);
+      const target = asWavelength(params.target);
       const tol = Number(params.tol);
-      for (const [color, rate] of Object.entries(inputs.in ?? {})) {
-        (colorDist(color, target) <= tol + 1e-9 ? near : far)[color] = rate;
+      for (const [wl, rate] of Object.entries(inputs.in ?? {})) {
+        (Math.abs(Number(wl) - target) <= tol + 1e-9 ? near : far)[wl] = rate;
       }
       return { near, far };
     },
@@ -258,8 +243,8 @@ export const MACHINE_TYPES: MachineType[] = [
       const capacity = Math.max(0.1, Number(params.capacity));
 
       if (!st.draining) {
-        for (const [color, rate] of Object.entries(inputs.in ?? {})) {
-          stored[color] = (stored[color] ?? 0) + rate * ctx.dt;
+        for (const [wl, rate] of Object.entries(inputs.in ?? {})) {
+          stored[wl] = (stored[wl] ?? 0) + rate * ctx.dt;
         }
         if (totalRate(stored) >= capacity) st.draining = true;
         return {};
@@ -273,7 +258,7 @@ export const MACHINE_TYPES: MachineType[] = [
       }
       const rate = Math.min(Math.max(0, Number(params.drainRate)), held / ctx.dt);
       const out: FluidMap = {};
-      for (const [color, amt] of Object.entries(stored)) out[color] = (rate * amt) / held;
+      for (const [wl, amt] of Object.entries(stored)) out[wl] = (rate * amt) / held;
       const keep = 1 - (rate * ctx.dt) / held;
       for (const k of Object.keys(stored)) {
         stored[k] *= keep;
@@ -293,39 +278,29 @@ export const MACHINE_TYPES: MachineType[] = [
     bodyColor: '#b9b2a6',
     cells: scaleCells([[0, 0], [1, 0], [0, 1], [1, 1]]),
     ports: [
-      {
-        id: 'in',
-        label: 'A',
-        kind: 'in',
-        edges: scaleEdges([
-          [[0, 0], 0], [[1, 0], 0],
-          [[1, 0], 1], [[1, 1], 1],
-          [[0, 1], 2], [[1, 1], 2],
-          [[0, 0], 3], [[0, 1], 3],
-        ]),
-      },
+      { id: 'in', label: 'A', kind: 'in', edges: RING_2X2 },
     ],
     params: [
-      { key: 'colorA', label: 'Target color A', kind: 'color', default: MAGENTA },
-      { key: 'colorB', label: 'Target color B', kind: 'color', default: MAGENTA },
-      { key: 'mixB', label: 'Share of color B', kind: 'number', default: 0, min: 0, max: 1, step: 0.05 },
-      { key: 'tol', label: 'Color tolerance', kind: 'number', default: 0.12, min: 0, max: 1, step: 0.01 },
+      { key: 'colorA', label: 'Target wavelength A (nm)', kind: 'wavelength', default: 580, min: WL_MIN, max: WL_MAX, step: 1 },
+      { key: 'colorB', label: 'Target wavelength B (nm)', kind: 'wavelength', default: 580, min: WL_MIN, max: WL_MAX, step: 1 },
+      { key: 'mixB', label: 'Share of B', kind: 'number', default: 0, min: 0, max: 1, step: 0.05 },
+      { key: 'tol', label: 'Tolerance (nm)', kind: 'number', default: 15, min: 0, max: 200, step: 1 },
     ],
     ruleText:
       'Slurps up everything fed into any side. Lights up while the incoming mixture ' +
-      'matches its target mixture (two colors in configured shares): each target ' +
-      "component must make up its share of what's arriving, judged by pigment within " +
-      'the color tolerance — the right-looking color made of the wrong pigments stays ' +
+      'matches its target mixture (two wavelengths in configured shares): each target ' +
+      "component must make up its share of what's arriving, judged by wavelength within " +
+      'the tolerance — the right-looking light made of the wrong wavelengths stays ' +
       'dark. Needs at least 0.5 L/s in total.',
     compute: (inputs, params, ctx): Record<string, FluidMap> => {
       const fm = inputs.in ?? {};
       const total = totalRate(fm);
       const target = targetMixture(
-        String(params.colorA), String(params.colorB), clamp01(Number(params.mixB)),
+        asWavelength(params.colorA, 580), asWavelength(params.colorB, 580), clamp01(Number(params.mixB)),
       );
       let score = 0;
-      for (const [color, share] of Object.entries(target)) {
-        const got = total > 1e-4 ? rateNear(fm, color, Number(params.tol)) / total : 0;
+      for (const [wl, share] of Object.entries(target)) {
+        const got = total > 1e-4 ? rateNear(fm, Number(wl), Number(params.tol)) / total : 0;
         score += Math.min(share, got);
       }
       const st = ctx.state as { rate?: number; score?: number; lit?: boolean };
