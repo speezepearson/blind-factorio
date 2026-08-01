@@ -1,11 +1,11 @@
 import { SIDE_NAMES, parseKey, placeMachine } from './geom';
 import { TYPE_BY_ID } from './machines';
-import { wavelengthColor, wavelengthName } from './light';
+import { WL_MAX, WL_MIN, wavelengthColor, wavelengthName } from './light';
 import { pumpKey } from './sim';
 import type { SimState } from './sim';
 import type { Clipboard } from './clipboard';
 import type { Tool } from './render';
-import type { FluidMap, Machine, ParamDef, ParamValue, World } from './types';
+import type { FluidMap, Machine, MixtureComponent, ParamDef, ParamValue, World } from './types';
 
 export type Hover = { kind: 'machine'; machineId: number } | { kind: 'pump'; key: string } | null;
 
@@ -58,6 +58,48 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
           defs.map((pd) => {
             const value = machine.params?.[pd.key] ?? pd.default;
             const set = (v: ParamValue) => onParamChange(machine, pd, v);
+            if (pd.kind === 'mixture') {
+              const comps = Array.isArray(value) ? value : [];
+              const patch = (i: number, c: Partial<MixtureComponent>) =>
+                set(comps.map((row, j) => (j === i ? { ...row, ...c } : row)));
+              return (
+                <div key={pd.key} className="param mixture">
+                  {pd.label}:
+                  {comps.map((c, i) => (
+                    <div key={i} className="mixture-row">
+                      <span className="swatch" style={{ background: wavelengthColor(c.wl) }} />
+                      <input
+                        type="range"
+                        min={WL_MIN}
+                        max={WL_MAX}
+                        step={1}
+                        value={c.wl}
+                        title="wavelength (nm)"
+                        onChange={(e) => patch(i, { wl: Number(e.target.value) })}
+                      />
+                      <b>{c.wl} nm</b>
+                      <input
+                        type="number"
+                        min={0}
+                        max={50}
+                        step={0.1}
+                        value={c.rate}
+                        title="rate (L/s)"
+                        onChange={(e) => {
+                          const v = e.target.valueAsNumber;
+                          if (Number.isFinite(v)) patch(i, { rate: v });
+                        }}
+                      />
+                      L/s
+                      <button title="Remove this row" onClick={() => set(comps.filter((_, j) => j !== i))}>
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                  <button onClick={() => set([...comps, { wl: 550, rate: 1 }])}>+ Add wavelength</button>
+                </div>
+              );
+            }
             return (
               <label key={pd.key} className="param">
                 {pd.label}: <b>{String(value)}</b>

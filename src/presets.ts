@@ -23,8 +23,8 @@ function buildLookalikeWorld(w: number, h: number): World {
   const add = (typeId: string, origin: Cell, params?: Record<string, ParamValue>) => {
     world.machines.push({ id: world.nextMachineId++, typeId, origin, rotation: 0, params });
   };
-  add('spring', [20, 25], { color: 556 });
-  add('spring', [20, 70], { color: 650, colorB: 540, mixB: 0.5 });
+  add('spring', [20, 25], { mixture: [{ wl: 556, rate: 2 }] });
+  add('spring', [20, 70], { mixture: [{ wl: 650, rate: 1 }, { wl: 540, rate: 1 }] });
   add('sink', [135, 25], { colorA: 650, colorB: 540, mixB: 0.5, tol: 12 });
   add('sink', [135, 70], { colorA: 556, tol: 12 });
   return world;

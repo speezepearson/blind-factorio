@@ -76,47 +76,6 @@
   border-color: #2b2823;
 }
 
-.lake-editor {
-  align-self: flex-start;
-  background: #fff;
-  border: 1px solid #c9c5bc;
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 13px;
-  color: #333;
-}
-
-.lake-editor summary {
-  cursor: pointer;
-  user-select: none;
-}
-
-.lake-editor table {
-  margin: 6px 0;
-  border-spacing: 6px 2px;
-}
-
-.lake-editor th {
-  font-weight: normal;
-  font-size: 12px;
-  color: #888;
-  text-align: left;
-}
-
-.lake-editor input {
-  width: 5em;
-}
-
-.lake-editor button {
-  font: 12px/1.2 var(--sans);
-  padding: 3px 8px;
-  border-radius: 5px;
-  border: 1px solid #c9c5bc;
-  background: #fff;
-  cursor: pointer;
-  margin-bottom: 4px;
-}
-
 .main {
   display: flex;
   gap: 12px;
@@ -186,10 +145,41 @@ canvas {
   margin-top: 4px;
 }
 
-.panel .param input[type='color'] {
-  width: 56px;
-  height: 30px;
-  padding: 0;
+.panel .mixture-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  font-size: 12px;
+}
+
+.panel .mixture-row input,
+.panel .mixture .swatch {
+  display: inline-block;
+  width: auto;
+  margin-top: 0;
+}
+
+.panel .mixture-row input[type='range'] {
+  flex: 1;
+  min-width: 60px;
+}
+
+.panel .mixture-row input[type='number'] {
+  width: 4em;
+}
+
+.panel .mixture-row b {
+  white-space: nowrap;
+}
+
+.panel .mixture button {
+  font: 12px/1.2 var(--sans);
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid #c9c5bc;
+  background: #fff;
+  cursor: pointer;
 }
 
 .dim {

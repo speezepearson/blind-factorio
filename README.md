@@ -1,9 +1,10 @@
 # blind-factorio
 
 A prototype sandbox for a game about **manipulating a factory you can't touch very precisely**.
-Colored fluids flow through pumps between machines on a square grid. A designer ("god mode")
-builds a factory with full information; a player sees an obscured version — blurred, anonymous
-machines on a gridless canvas — and has to probe and manipulate it with fuzzy tools.
+Glowing fluids flow through pumps between machines on a square grid. A designer ("god mode")
+builds a factory with full information; a player sees an obscured version — anonymous
+machines, unlabeled ports, blind pipe-drawing — and has to probe and manipulate it by
+watching what the light does.
 
 ## Running it
 
@@ -33,8 +34,8 @@ npm run lint    # oxlint
   650 nm + 540 nm flowing together are visually indistinguishable but mechanically
   different — and near-infrared fluid emits no visible light, so it flows jet black.
   A port's output is split
-  evenly among the pumps drawing from it. Machine types: spring (emits a one- or
-  two-wavelength mixture from its whole perimeter), reactor (conditional rule with
+  evenly among the pumps drawing from it. Machine types: spring (emits an arbitrary
+  list of wavelength/rate components from its whole perimeter), reactor (conditional rule with
   wavelength tolerances, emits its output wavelength), funnel (merges streams, passes
   the mixture through untouched), blender (irreversibly homogenizes a mixture to its
   rate-weighted *average wavelength* — which usually looks nothing like the mixture
@@ -59,21 +60,19 @@ npm run lint    # oxlint
 | `src/presets.ts` | The "Load preset…" worlds, e.g. "Green, two ways" (lookalike sources/sinks that only the right wavelengths satisfy). |
 | `src/serialize.ts` | World ↔ URL-safe base64 deflated JSON, for Export/Import/`#world=` links. |
 | `src/App.tsx` | The UI shell: tools, mouse handling, undo/redo, world sharing. |
-| `src/warp.ts` | How we lie to the player: warp noise, the tool-square edge warp, the lake compositor, and the `Obscura` settings bundle. |
 | `src/render.ts` | Canvas rendering of the world + tool overlays. |
 | `src/clipboard.ts` | Regions (squares or lassoed blobs: bbox + cell set + outline polygon) and copy/paste/rotate of them. |
-| `src/Panel.tsx` | The inspector/help side panel. |
-| `src/LakeEditor.tsx` | The god-mode table for editing lake ripple layers. |
+| `src/Panel.tsx` | The inspector/help side panel, including the spring's mixture-list editor. |
 
 ## UI architecture (read before touching App.tsx)
 
 The world is **deliberately not React state**. `worldRef.current` is mutated in place by
 tool gestures; a 110 ms interval (divided by the toolbar Speed multiplier — ticks come
 faster but each tick is unchanged) advances the sim and redraws imperatively — the world
-renders to an *offscreen* canvas, and a requestAnimationFrame loop composites that onto
-the visible canvas (through the time-varying "lake" warp outside god mode), then draws
-the copy/erase/paste selection overlay on top so its boundary can ripple at frame rate;
-a `setTick` counter forces React re-renders only so the side panel shows live values.
+renders to an *offscreen* canvas, which is blitted to the visible canvas with the
+copy/erase/paste selection overlay drawn on top (so region snapshots, used for the paste
+ghost, can read the offscreen canvas without capturing overlays); a `setTick` counter
+forces React re-renders only so the side panel shows live values.
 Every piece of state the draw loop needs is shadowed in a ref (`toolRef`, `godModeRef`, …)
 so the interval and mouse handlers never close over stale values. React state proper only
 drives the toolbar and panel. Undo/redo snapshots the whole world with `structuredClone`
@@ -81,30 +80,20 @@ per *gesture* (rapid edits of the same machine param coalesce).
 
 Two views of the same world:
 
-- **God mode** (checkbox or **G**, default off): fine-grid lines, machine
-  identities/labels/ports, placement buttons, dragging machines (Edit tool), param
-  sliders, blur/warp sliders.
-- **Player view**: no grid lines at all, anonymous grey machines, Gaussian-blurred canvas,
-  inspector refuses to identify machines. Copy and erase **free-select**: drag a lasso
-  around whatever you want (a click still selects the slider-sized square centered on the
-  cursor). The selection is honest — the lassoed cells are exactly what's copied/erased —
-  but its drawn boundary is displaced through a world-locked smooth noise field ("Warp"
-  amplitude + "Warp scale" sliders, in cells), rippled in time by a differently-seeded
-  copy of the lake's layered field (so the boundary never visually agrees with a fixed
-  patch of map), and Gaussian-blurred ("Tool blur" slider) — its exact position and edges
-  can't be pinned down. On top of that, the whole map view is composited through a
-  time-evolving warp field, like watching the factory through the surface of a lake —
-  a sum of noise layers, each with its own wave direction/speed (drift), magnitude,
-  wavelength, and time scale, edited in the collapsible "Lake ripple layers" table.
-  All of this is cosmetic; the selected cells are exact, the world never moves, and
-  mouse input maps to the true grid. Imprecision-by-fog is a core game-feel experiment.
+- **God mode** (checkbox or **G**, default off): machine identities/labels/ports,
+  placement buttons, dragging machines (Edit tool), param editing.
+- **Player view**: anonymous grey machines, the inspector refuses to identify machines,
+  and pipe drawing is blind (no drag preview — just the crosshair cursor). Copy and
+  erase **free-select**: drag a lasso around whatever you want (a click still selects
+  the slider-sized square centered on the cursor). Sinks glow for the player too — that
+  feedback is the game.
 
 ## Sharing
 
 Export/Share serialize the world *structure* (machines + params + pumps). Sim fluid and
 machine internal state (e.g. a buffer's contents) are intentionally not serialized —
-import re-runs 400 warm-up ticks (`prewarm`) instead. View config (god mode, the
-`Obscura` blur/warp/lake settings) is also deliberately not part of world codes. World codes decode from either
+import re-runs 400 warm-up ticks (`prewarm`) instead. View config (god mode) is also
+deliberately not part of world codes. World codes decode from either
 base64 alphabet; links look like `https://blind-factorio.exe.xyz/#world=<code>`.
 
 ## Verifying changes

@@ -31,7 +31,7 @@ export function buildStarterWorld(w: number, h: number): World {
   };
 
   add('spring', [20, 30]); // 650 nm red by default
-  add('spring', [55, 30], { color: 540 }); // green
+  add('spring', [55, 30], { mixture: [{ wl: 540, rate: 2 }] }); // green
   add('reactor', [38, 58]);
   add('funnel', [70, 40]);
   add('funnel', [100, 60]);

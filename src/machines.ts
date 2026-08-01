@@ -83,6 +83,25 @@ function targetMixture(wlA: number, wlB: number, mixB: number): FluidMap {
   return t;
 }
 
+// A spring's produced mixture: the 'mixture' param is an arbitrary list of
+// {wl, rate} rows. Old world codes may instead hold the legacy
+// rate/color/colorB/mixB params — convert those on the fly.
+function springMixture(params: Record<string, ParamValue>): FluidMap {
+  const out: FluidMap = {};
+  const add = (wl: number, rate: number) => {
+    if (rate > 1e-6) out[wl] = (out[wl] ?? 0) + rate;
+  };
+  if (Array.isArray(params.mixture)) {
+    for (const c of params.mixture) add(asWavelength(c?.wl), Number(c?.rate));
+  } else {
+    const rate = Number(params.rate) || 2;
+    const mix = clamp01(Number(params.mixB));
+    add(asWavelength(params.color), rate * (1 - mix));
+    add(asWavelength(params.colorB), rate * mix);
+  }
+  return out;
+}
+
 // the exact color of the two-wavelength mixture a machine produces/wants
 const twoWlColor = (params: Record<string, ParamValue>, fallbackWl: number): string =>
   mixtureColor(targetMixture(
@@ -109,27 +128,14 @@ export const MACHINE_TYPES: MachineType[] = [
       { id: 'out', label: 'A', kind: 'out', edges: RING_2X2 },
     ],
     params: [
-      { key: 'rate', label: 'Production rate (L/s)', kind: 'number', default: 2, min: 0, max: 10, step: 0.1 },
-      { key: 'color', label: 'Wavelength (nm)', kind: 'wavelength', default: 650, min: WL_MIN, max: WL_MAX, step: 1 },
-      { key: 'colorB', label: 'Wavelength B (nm)', kind: 'wavelength', default: 650, min: WL_MIN, max: WL_MAX, step: 1 },
-      { key: 'mixB', label: 'Share of B', kind: 'number', default: 0, min: 0, max: 1, step: 0.05 },
+      { key: 'mixture', label: 'Produced mixture', kind: 'mixture', default: [{ wl: 650, rate: 2 }] },
     ],
     ruleText:
-      'Produces fluid at its configured rate, offered from every edge (port A spans the ' +
-      'whole perimeter): a mixture of its two wavelengths in the configured shares ' +
-      '(share 0 = pure wavelength A, the default). Its body is painted exactly like ' +
-      'the fluid it produces. Needs no inputs.',
-    fluidColor: (params) => twoWlColor(params, 650),
-    compute: (_inputs, params): Record<string, FluidMap> => {
-      const rate = Number(params.rate);
-      const out: FluidMap = {};
-      for (const [wl, share] of Object.entries(
-        targetMixture(asWavelength(params.color), asWavelength(params.colorB), clamp01(Number(params.mixB))),
-      )) {
-        out[wl] = rate * share;
-      }
-      return { out };
-    },
+      'Produces every wavelength in its list at that row’s rate, offered from every ' +
+      'edge (port A spans the whole perimeter). Its body is painted exactly like the ' +
+      'fluid it produces. Needs no inputs.',
+    fluidColor: (params) => mixtureColor(springMixture(params)),
+    compute: (_inputs, params): Record<string, FluidMap> => ({ out: springMixture(params) }),
   },
   {
     id: 'reactor',

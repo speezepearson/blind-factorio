@@ -13,13 +13,10 @@ import {
   bboxTL, captureRegion, lassoRegion, machinePlacementOk, pasteClipboard, rotateClipboard, squareRegion,
 } from './clipboard';
 import type { Clipboard, Region } from './clipboard';
-import { DEFAULT_OBSCURA, drawLakeWarped, lakeIsStill } from './warp';
-import type { Obscura } from './warp';
 import { drawToolOverlay, drawWorld } from './render';
 import type { DragState, Tool, ViewState } from './render';
 import { Panel } from './Panel';
 import type { Hover } from './Panel';
-import { LakeEditor } from './LakeEditor';
 import './App.css';
 
 const TICK_MS = 110;
@@ -70,7 +67,6 @@ export default function App() {
   // editing. Off (the default) = the player's obscured view: anonymous
   // machines + blur.
   const [godMode, setGodMode] = useState(false);
-  const [obscura, setObscura] = useState<Obscura>(DEFAULT_OBSCURA);
   const [placeRotation, setPlaceRotation] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [hover, setHover] = useState<Hover>(null);
@@ -80,8 +76,6 @@ export default function App() {
   toolRef.current = tool;
   const copySizeRef = useRef(copySize);
   copySizeRef.current = copySize;
-  const obscuraRef = useRef(obscura);
-  obscuraRef.current = obscura;
   const clipboardRef = useRef(clipboard);
   clipboardRef.current = clipboard;
   const godModeRef = useRef(godMode);
@@ -247,9 +241,9 @@ export default function App() {
   };
 
   // ---- drawing -----------------------------------------------------------
-  // The world (plus tool overlays) is rendered to an offscreen canvas; a rAF
-  // loop composites it onto the visible canvas, warped through the
-  // time-varying "lake" field outside god mode.
+  // The world is rendered to an offscreen canvas, then blitted to the
+  // visible canvas with the tool overlay on top — so region snapshots (the
+  // paste ghost) can read the offscreen canvas without capturing overlays.
 
   const worldCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const worldCanvas = (): HTMLCanvasElement => {
@@ -266,7 +260,6 @@ export default function App() {
     world: worldRef.current,
     sim: simRef.current,
     godMode: godModeRef.current,
-    obscura: obscuraRef.current,
     copyCells: copySizeRef.current,
     tool: toolRef.current,
     hoverCell: hoverCellRef.current,
@@ -279,15 +272,8 @@ export default function App() {
   const composite = () => {
     const cv = canvasRef.current;
     if (!cv) return;
-    const tSec = performance.now() / 1000;
-    if (godModeRef.current || lakeIsStill(obscuraRef.current.lakeLayers)) {
-      cv.getContext('2d')!.drawImage(worldCanvas(), 0, 0);
-    } else {
-      drawLakeWarped(cv, worldCanvas(), tSec, obscuraRef.current.lakeLayers);
-    }
-    // tool overlays live on the visible canvas so their boundaries can
-    // ripple at frame rate, independent of the lake beneath them
-    drawToolOverlay(cv, currentView(), tSec);
+    cv.getContext('2d')!.drawImage(worldCanvas(), 0, 0);
+    drawToolOverlay(cv, currentView());
   };
 
   const draw = () => {
@@ -343,13 +329,8 @@ export default function App() {
       }
     };
     window.addEventListener('keydown', onKey);
-    let raf = requestAnimationFrame(function loop() {
-      composite();
-      raf = requestAnimationFrame(loop);
-    });
     return () => {
       window.removeEventListener('keydown', onKey);
-      cancelAnimationFrame(raf);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -357,7 +338,7 @@ export default function App() {
   useEffect(() => {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [godMode, clipboard, tool, copySize, obscura, selectedId, placeRotation]);
+  }, [godMode, clipboard, tool, copySize, selectedId, placeRotation]);
 
   // ---- mouse handlers ----------------------------------------------------
 
@@ -582,46 +563,6 @@ export default function App() {
           </>
         )}
         <span className="spacer" />
-        {godMode && (
-          <>
-            <Slider
-              label={`Blur: ${obscura.blurPx.toFixed(1)}`}
-              title="Gaussian blur applied outside god mode"
-              min={0}
-              max={8}
-              step={0.5}
-              value={obscura.blurPx}
-              onChange={(v) => setObscura((o) => ({ ...o, blurPx: v }))}
-            />
-            <Slider
-              label={`Tool blur: ${obscura.toolBlur.toFixed(1)}`}
-              title="Blur on the copy/erase square outside god mode, in cells"
-              min={0}
-              max={5}
-              step={0.5}
-              value={obscura.toolBlur}
-              onChange={(v) => setObscura((o) => ({ ...o, toolBlur: v }))}
-            />
-            <Slider
-              label={`Warp: ${obscura.warpAmp.toFixed(1)}`}
-              title="How far the tool square's drawn edges wander through the world-locked warp field, in cells"
-              min={0}
-              max={5}
-              step={0.25}
-              value={obscura.warpAmp}
-              onChange={(v) => setObscura((o) => ({ ...o, warpAmp: v }))}
-            />
-            <Slider
-              label={`Warp scale: ${obscura.warpScale}`}
-              title="Feature size of the warp field, in cells"
-              min={2}
-              max={30}
-              step={1}
-              value={obscura.warpScale}
-              onChange={(v) => setObscura((o) => ({ ...o, warpScale: v }))}
-            />
-          </>
-        )}
         <label className="checkbox" title="Toggle with G">
           <input
             type="checkbox"
@@ -650,18 +591,11 @@ export default function App() {
           ))}
         </select>
       </div>
-      {godMode && (
-        <LakeEditor
-          layers={obscura.lakeLayers}
-          onChange={(ls) => setObscura((o) => ({ ...o, lakeLayers: ls }))}
-        />
-      )}
       <div className="main">
         <canvas
           ref={canvasRef}
           width={GRID_W * CELL}
           height={GRID_H * CELL}
-          style={{ filter: !godMode && obscura.blurPx > 0 ? `blur(${obscura.blurPx}px)` : 'none' }}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={endDrag}

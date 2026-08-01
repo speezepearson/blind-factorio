@@ -19,15 +19,21 @@ export interface PortDef {
   edges: Edge[];
 }
 
-// A tunable per-machine-instance parameter, e.g. a spring's production rate
-// (kind 'number') or a fluid wavelength (kind 'wavelength', 400-800 nm,
-// shown as a slider with a live color swatch).
-export type ParamValue = number | string;
+// One row of a produced/target mixture: a wavelength and its rate.
+export interface MixtureComponent {
+  wl: number; // nm
+  rate: number; // L/s
+}
+
+// A tunable per-machine-instance parameter: a plain number, a fluid
+// wavelength (kind 'wavelength', 400-800 nm, shown as a slider with a live
+// color swatch), or an arbitrary list of mixture components (kind 'mixture').
+export type ParamValue = number | string | MixtureComponent[];
 
 export interface ParamDef {
   key: string;
   label: string;
-  kind: 'number' | 'wavelength';
+  kind: 'number' | 'wavelength' | 'mixture';
   default: ParamValue;
   min?: number;
   max?: number;

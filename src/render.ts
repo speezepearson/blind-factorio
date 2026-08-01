@@ -8,8 +8,6 @@ import { placeAll, pumpKey } from './sim';
 import type { SimState } from './sim';
 import { machinePlacementOk, bboxTL } from './clipboard';
 import type { Clipboard } from './clipboard';
-import { SELECTION_RIPPLE_SALT, prepRipple, traceWarpedPoly } from './warp';
-import type { Obscura } from './warp';
 import type { Cell, ParamValue, Side, World } from './types';
 
 export type Tool =
@@ -30,7 +28,6 @@ export interface ViewState {
   world: World;
   sim: SimState;
   godMode: boolean;
-  obscura: Obscura;
   copyCells: number; // the copy region side in fine cells
   tool: Tool;
   hoverCell: Cell | null;
@@ -212,9 +209,8 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     }
   }
 
-  // (the copy/erase/paste selection preview is NOT drawn here — see
-  // drawToolOverlay, which runs every compositor frame so the selection
-  // boundary can ripple in time)
+  // (the copy/erase/paste selection preview is drawn by drawToolOverlay,
+  // on the visible canvas, so region snapshots never capture it)
   const t = view.tool;
   const hc = view.hoverCell;
 
@@ -258,13 +254,9 @@ const selectionColors = (tool: 'copy' | 'erase', clip: Clipboard | null): [strin
       ? ['rgba(47, 127, 209, 0.16)', '#2f7fd1']
       : ['rgba(74, 70, 64, 0.13)', '#4a4640'];
 
-// The copy/paste/erase selection preview, drawn onto the *visible* canvas
-// every compositor frame (on top of the lake warp). Outside god mode the
-// boundary is blurred, displaced through the world-locked static warp field,
-// and rippled by a differently-seeded copy of the lake's layered field — so
-// its drawn edge undulates in time and never quite agrees with the (also
-// warping) map beneath it. All cosmetic: the true selected cells are exact.
-export function drawToolOverlay(canvas: HTMLCanvasElement, view: ViewState, tSec: number): void {
+// The copy/paste/erase selection preview, drawn onto the visible canvas
+// after the world (so the paste-ghost snapshot never captures it).
+export function drawToolOverlay(canvas: HTMLCanvasElement, view: ViewState): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const t = view.tool;
@@ -272,11 +264,6 @@ export function drawToolOverlay(canvas: HTMLCanvasElement, view: ViewState, tSec
   const lasso = drag?.mode === 'lasso' ? drag : null;
   const hc = view.hoverCell;
   if (!lasso && !((t.kind === 'copy' || t.kind === 'erase') && hc)) return;
-
-  const god = view.godMode;
-  const ampPx = god ? 0 : view.obscura.warpAmp * CELL;
-  const scalePx = view.obscura.warpScale * CELL;
-  const preps = god ? [] : prepRipple(view.obscura.lakeLayers, tSec, SELECTION_RIPPLE_SALT);
 
   // Resolve what to draw: the in-progress lasso path, or the cursor-centered
   // square / clipboard outline.
@@ -300,13 +287,17 @@ export function drawToolOverlay(canvas: HTMLCanvasElement, view: ViewState, tSec
   }
 
   ctx.save();
-  if (!god && view.obscura.toolBlur > 0) ctx.filter = `blur(${view.obscura.toolBlur * CELL}px)`;
-  traceWarpedPoly(ctx, pts, ampPx, scalePx, preps);
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++) {
+    if (i === 0) ctx.moveTo(pts[i][0], pts[i][1]);
+    else ctx.lineTo(pts[i][0], pts[i][1]);
+  }
+  ctx.closePath();
   ctx.fillStyle = colors[0];
   ctx.fill();
   if (ghost && clip?.snapshot) {
     // ghost of what the copied region looked like at copy time, clipped to
-    // the (warped, rippling) outline
+    // the selection outline
     ctx.save();
     ctx.clip();
     ctx.globalAlpha = 0.55;
