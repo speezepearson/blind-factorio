@@ -80,17 +80,22 @@ export interface Machine {
   params?: Record<string, ParamValue>; // overrides of the type's param defaults
 }
 
-export interface Pump {
-  inSide: Side;
-  outSide: Side;
+// A stretch of pipe: an ordered path of cells along which fluid flows, one
+// cell per tick, from cells[0] to the far end. The endpoint just before
+// cells[0] may attach to a machine's out-port (its source) and the endpoint
+// just past the last cell to an in-port (its destination) — so pipelines are
+// directed edges in a machine graph. Any number of pipelines may pass
+// through the same cell; they never interact.
+export interface Pipeline {
+  id: number;
+  cells: Cell[];
 }
 
 export interface World {
   w: number;
   h: number;
-  // key "x,y" -> pumps in that cell: at most one horizontal and one vertical
-  // straight pump may coexist; a bent pump occupies the whole cell.
-  pumps: Map<string, Pump[]>;
+  pipelines: Pipeline[];
   machines: Machine[];
   nextMachineId: number;
+  nextPipelineId: number;
 }

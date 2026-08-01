@@ -1,10 +1,10 @@
 # blind-factorio
 
 A prototype sandbox for a game about **manipulating a factory you can't touch very precisely**.
-Glowing fluids flow through pumps between machines on a square grid. A designer ("god mode")
+Glowing fluids flow through pipelines between machines on a square grid. A designer ("god mode")
 builds a factory with full information; a player sees an obscured version — anonymous
-machines, unlabeled ports, blind pipe-drawing — and has to probe and manipulate it by
-watching what the light does.
+machines, unlabeled ports, secretive pipes, blind pipe-drawing — and has to probe and
+manipulate it by watching what the light does.
 
 ## Running it
 
@@ -23,18 +23,21 @@ npm run lint    # oxlint
 
 - The world is a fine grid (170×110 cells of 6px). Machines are authored on a coarser
   5× grid (`SCALE` in `machines.ts`), so a "2×2" machine really occupies 10×10 fine cells.
-- Each fine cell is blank, part of a machine, or holds pumps. A cell can hold **two**
-  crossing straight pumps (one per axis); a bent pump claims the whole cell (`mergePumps`).
+- Fluid travels in **pipelines**: directed stretches of pipe (an ordered path of cells)
+  running through open space from one machine's edge to another's. Pipelines are edges
+  in a machine graph — each attaches (positionally) to an out-port at its intake and an
+  in-port at its outflow, and any number of pipelines may pass through the same cell
+  without interacting. (Merging/splitting junctions are planned, not built.)
 - Machines have ports (contiguous runs of perimeter edges) and a `compute` function from
   per-port inputs to per-port outputs. Fluids are identified by **light wavelength**
-  (400–800 nm), and every stream — in a pump or at a port — is a whole **mixture**
+  (400–800 nm), and every stream — in a pipe or at a port — is a whole **mixture**
   (`FluidMap`: wavelength → L/s). A pipe draws with width ∝ √(total rate) and the color
   of its combined light: the fluid is a cloud of tiny equal-power monochromatic
   emitters, folded through the CIE observer (`light.ts`), so pure 556 nm and
   650 nm + 540 nm flowing together are visually indistinguishable but mechanically
   different — and near-infrared fluid emits no visible light, so it flows jet black.
   A port's output is split
-  evenly among the pumps drawing from it. Machine types: spring (emits an arbitrary
+  evenly among the pipelines drawing from it. Machine types: spring (emits an arbitrary
   list of wavelength/rate components from its whole perimeter), reactor (conditional rule with
   wavelength tolerances, emits its output wavelength), funnel (merges streams, passes
   the mixture through untouched), blender (irreversibly homogenizes a mixture to its
@@ -43,16 +46,17 @@ npm run lint    # oxlint
   cannot split a homogenized fluid), buffer (stateful: fills to capacity, then drains
   its stored mixture proportionally), sink (slurps everything, glows while the incoming
   wavelength composition matches its target mixture).
-- The sim ticks synchronously every 110 ms (`TICK_MS`); pump-to-pump flow advances one
-  cell per tick, machine outputs are recomputed each tick from the previous tick's pump
-  contents. `step()` is a pure function `(world, prevSim, dt) -> nextSim`.
+- The sim ticks synchronously every 110 ms (`TICK_MS`); each pipeline's contents shift
+  one cell toward its far end per tick — the head refills from its source port's fresh
+  output, the tail delivers last tick's arrival to its destination port. `step()` is a
+  pure function `(world, prevSim, dt) -> nextSim`.
 
 ## Module map
 
 | File | Job |
 |---|---|
-| `src/types.ts` | Core data types: World, Machine, MachineType, ports, params, pumps. |
-| `src/geom.ts` | Grid constants (`GRID_W`/`GRID_H`/`CELL`) and geometry: sides, rotation, machine placement, pump path orientation, pump merging. |
+| `src/types.ts` | Core data types: World, Machine, MachineType, ports, params, Pipeline. |
+| `src/geom.ts` | Grid constants (`GRID_W`/`GRID_H`/`CELL`) and geometry: sides, rotation, machine placement, pipeline path orientation and cell lookups. |
 | `src/light.ts` | Wavelength → sRGB color science: CIE observer fit, spectral-mixture rendering, gamut mapping, wavelength band names. |
 | `src/machines.ts` | The machine-type catalog + wavelength math. **To add a machine type, append one object here** — shape (coarse cells via `scaleCells`), ports, editable params, `compute`, optional `describeState`. Everything else (placement, rendering, editing, serialization) picks it up automatically. |
 | `src/sim.ts` | The tick function. Owns per-machine persistent state (`ComputeCtx.state`) for stateful machines. |
@@ -90,7 +94,7 @@ Two views of the same world:
 
 ## Sharing
 
-Export/Share serialize the world *structure* (machines + params + pumps). Sim fluid and
+Export/Share serialize the world *structure* (machines + params + pipelines). Sim fluid and
 machine internal state (e.g. a buffer's contents) are intentionally not serialized —
 import re-runs 400 warm-up ticks (`prewarm`) instead. View config (god mode) is also
 deliberately not part of world codes. World codes decode from either

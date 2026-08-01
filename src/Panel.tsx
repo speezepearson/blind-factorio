@@ -1,13 +1,12 @@
-import { SIDE_NAMES, parseKey, placeMachine } from './geom';
+import { SIDE_NAMES, parseKey, pipelinesAt, placeMachine } from './geom';
 import { TYPE_BY_ID } from './machines';
 import { WL_MAX, WL_MIN, wavelengthColor, wavelengthName } from './light';
-import { pumpKey } from './sim';
 import type { SimState } from './sim';
 import type { Clipboard } from './clipboard';
 import type { Tool } from './render';
 import type { FluidMap, Machine, MixtureComponent, ParamDef, ParamValue, World } from './types';
 
-export type Hover = { kind: 'machine'; machineId: number } | { kind: 'pump'; key: string } | null;
+export type Hover = { kind: 'machine'; machineId: number } | { kind: 'pipe'; key: string } | null;
 
 function FluidList({ fm }: { fm: FluidMap | undefined }) {
   const entries = Object.entries(fm ?? {}).filter(([, r]) => r > 1e-4).sort((a, b) => b[1] - a[1]);
@@ -160,21 +159,34 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
       </>
     );
   }
-  if (hover?.kind === 'pump') {
-    const list = world.pumps.get(hover.key);
-    if (!list || list.length === 0) return null;
-    const [x, y] = parseKey(hover.key);
+  if (hover?.kind === 'pipe') {
+    const cell = parseKey(hover.key);
+    const pls = pipelinesAt(world.pipelines, cell);
+    if (pls.length === 0) return null;
+    // the player sees that there's a pipe, but not what's in it or which way
+    // it flows — they have to read the light
+    if (!godMode) {
+      return (
+        <>
+          <h2>Pipe</h2>
+          <p className="rule dim">This pipe keeps its secrets.</p>
+        </>
+      );
+    }
     return (
       <>
-        <h2>{list.length > 1 ? 'Crossing pumps' : 'Pump'}</h2>
-        {list.map((pump) => (
-          <div key={`${pump.inSide}${pump.outSide}`}>
-            <p className="rule">
-              Pulls from its {SIDE_NAMES[pump.inSide]} side, pushes out its {SIDE_NAMES[pump.outSide]} side.
-            </p>
-            <p><FluidList fm={sim.pumpFluids.get(pumpKey(x, y, pump))} /></p>
-          </div>
-        ))}
+        <h2>{pls.length > 1 ? 'Crossing pipelines' : 'Pipeline'}</h2>
+        {pls.map((pl) => {
+          const idx = pl.cells.findIndex(([x, y]) => x === cell[0] && y === cell[1]);
+          return (
+            <div key={pl.id}>
+              <p className="rule">
+                Pipeline #{pl.id}: {pl.cells.length} cells, {idx} in from its intake. Carrying here:
+              </p>
+              <p><FluidList fm={sim.pipeFluids.get(pl.id)?.[idx]} /></p>
+            </div>
+          );
+        })}
       </>
     );
   }
@@ -186,10 +198,10 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
           <ul className="help">
             <li>
               Clipboard holds <b>{clipboard.machines.length}</b> machine{clipboard.machines.length === 1 ? '' : 's'} and{' '}
-              <b>{clipboard.pumps.length}</b> pump{clipboard.pumps.length === 1 ? '' : 's'}.
+              <b>{clipboard.pipelines.length}</b> pipe{clipboard.pipelines.length === 1 ? '' : 's'}.
             </li>
             <li>Click to paste (as often as you like). Press <b>R</b> to rotate the clipboard.</li>
-            <li>Machines that don't fit are skipped; pumps overwrite pumps but never machines.</li>
+            <li>Machines and pipes that don't fit are skipped.</li>
             <li>Press <b>Esc</b> to empty the clipboard and copy something else.</li>
           </ul>
         ) : (
@@ -206,7 +218,7 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
     <>
       <h2>Sandbox</h2>
       <ul className="help">
-        <li><b>Pipes:</b> click-drag to draw a line of pumps — you can start the drag on a machine. Drag backwards to undo.</li>
+        <li><b>Pipes:</b> click-drag to lay a pipeline from one machine to another — you can start the drag on a machine. Drag backwards to undo. Pipes can cross freely without connecting.</li>
         <li><b>Copy/paste:</b> lasso (or click a square around) a patch of factory to stamp out elsewhere, machines included.</li>
         <li><b>Erase:</b> lasso (or click a square around) a region to wipe — pumps inside it are removed, and machines overlapping it even partially are removed whole.</li>
         <li>Hover anything to inspect its rule and live flows here.</li>

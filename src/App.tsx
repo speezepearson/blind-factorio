@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  CELL, GRID_H, GRID_W, cellKey, machineCellMap, mergePumps, orientPath, placeMachine,
+  CELL, GRID_H, GRID_W, cellKey, machineCellMap, pipelinesAt, placeMachine,
 } from './geom';
 import { MACHINE_TYPES, TYPE_BY_ID } from './machines';
 import { emptySim, placeAll, step } from './sim';
@@ -150,18 +150,18 @@ export default function App() {
       const k = cellKey(cell[0], cell[1]);
       const pm = machineCellMap(placeAll(worldRef.current)).get(k);
       if (pm) next = { kind: 'machine', machineId: pm.machine.id };
-      else if (worldRef.current.pumps.has(k)) next = { kind: 'pump', key: k };
+      else if (pipelinesAt(worldRef.current.pipelines, cell).length > 0) next = { kind: 'pipe', key: k };
     }
     setHover((h) => (hoverKey(h) === hoverKey(next) ? h : next));
   };
 
-  // Wipe a region: pumps inside it go, and machines overlapping it even
+  // Wipe a region: pipelines touching it and machines overlapping it even
   // partially go whole.
   const eraseRegion = (region: Region) => {
     const world = worldRef.current;
-    for (const k of [...world.pumps.keys()]) {
-      if (region.cells.has(k)) world.pumps.delete(k);
-    }
+    world.pipelines = world.pipelines.filter(
+      (pl) => !pl.cells.some(([x, y]) => region.cells.has(cellKey(x, y))),
+    );
     const doomed = new Set(
       placeAll(world)
         .filter((pm) => pm.cells.some(([x, y]) => region.cells.has(cellKey(x, y))))
@@ -170,18 +170,16 @@ export default function App() {
     if (doomed.size > 0) world.machines = world.machines.filter((m) => !doomed.has(m.id));
   };
 
+  // A finished pipe drag becomes one pipeline. The drag may have anchored on
+  // a machine cell (that's how you start from a machine) — strip those; the
+  // pipeline's endpoints attach to whatever port edges they touch.
   const commitPipePath = (path: Cell[]) => {
     const world = worldRef.current;
     const occupied = machineCellMap(placeAll(world));
-    const placements = orientPath(path).filter(
-      ({ cell }) => !occupied.has(cellKey(cell[0], cell[1])),
-    );
-    if (placements.length === 0) return;
+    const cells = path.filter((c) => !occupied.has(cellKey(c[0], c[1])));
+    if (cells.length === 0) return;
     checkpoint();
-    for (const { cell, inSide, outSide } of placements) {
-      const k = cellKey(cell[0], cell[1]);
-      world.pumps.set(k, mergePumps(world.pumps.get(k), { inSide, outSide }));
-    }
+    world.pipelines.push({ id: world.nextPipelineId++, cells });
   };
 
   const extendPath = (path: Cell[], target: Cell, blocked: (c: Cell) => boolean) => {
@@ -399,9 +397,9 @@ export default function App() {
       if (drag.path.length === 1 && isMachine(drag.path[0]) && isMachine(cell)) {
         drag.path[0] = cell; // slide the anchor while still inside a machine
       } else {
-        // machine cells are allowed in the path (no pumps appear on them, so
-        // the pipe tunnels through and resumes on the far side)
-        extendPath(drag.path, cell, ([x, y]) => x < 0 || y < 0 || x >= GRID_W || y >= GRID_H);
+        // machines block the path: a pipeline runs through open space from
+        // one machine's edge to another's
+        extendPath(drag.path, cell, ([x, y]) => x < 0 || y < 0 || x >= GRID_W || y >= GRID_H || isMachine([x, y]));
       }
     } else if (cell && drag?.mode === 'move') {
       // live-move the machine, refusing spots where it wouldn't fit

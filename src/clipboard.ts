@@ -1,10 +1,10 @@
 import {
-  CELL, cellKey, machineCellMap, mergePumps, parseKey, placeMachine, rotateSide,
+  CELL, cellKey, machineCellMap, parseKey, pipelineCellSet, placeMachine,
 } from './geom';
 import type { PlacedMachine } from './geom';
 import { TYPE_BY_ID } from './machines';
 import { placeAll } from './sim';
-import type { Cell, Machine, ParamValue, Pump, World } from './types';
+import type { Cell, Machine, ParamValue, World } from './types';
 
 // A selected patch of the world: a bounding box, the set of fine cells
 // actually inside the selection, and the boundary polygon (for drawing).
@@ -23,7 +23,7 @@ export interface Clipboard {
   cells: Set<string>; // cell keys inside the selection, relative to the bbox
   outline: Array<[number, number]>; // boundary polygon in px, relative to the bbox
   machines: Array<{ typeId: string; rotation: number; rel: Cell; params?: Record<string, ParamValue> }>;
-  pumps: Array<{ rel: Cell; pump: Pump }>;
+  pipelines: Array<{ cells: Cell[] }>; // cells relative to the bbox, in flow order
   // visual snapshot of the copied region's bounding box at copy time — shown
   // (clipped to the outline) as the paste ghost
   snapshot?: HTMLCanvasElement;
@@ -123,9 +123,9 @@ export function rotateClipboard(clip: Clipboard): Clipboard {
       const mh = Math.max(...pm.cells.map((c) => c[1])) + 1;
       return { ...m, rotation: (m.rotation + 1) % 4, rel: [h - mh - m.rel[1], m.rel[0]] as Cell };
     }),
-    pumps: clip.pumps.map((p) => ({
-      rel: [h - 1 - p.rel[1], p.rel[0]] as Cell,
-      pump: { inSide: rotateSide(p.pump.inSide, 1), outSide: rotateSide(p.pump.outSide, 1) },
+    // flow direction is implicit in cell order, so rotation is just geometry
+    pipelines: clip.pipelines.map((pl) => ({
+      cells: pl.cells.map(([x, y]) => [h - 1 - y, x] as Cell),
     })),
     snapshot: clip.snapshot ? rotateCanvas90(clip.snapshot) : undefined,
   };
@@ -136,10 +136,11 @@ export function rotateClipboard(clip: Clipboard): Clipboard {
 // check, for use while moving it.
 export function machinePlacementOk(world: World, placed: PlacedMachine, ignoreId?: number): boolean {
   const occupied = machineCellMap(placeAll(world).filter((pm) => pm.machine.id !== ignoreId));
+  const pipeCells = pipelineCellSet(world.pipelines);
   return placed.cells.every(
     ([x, y]) =>
       x >= 0 && y >= 0 && x < world.w && y < world.h &&
-      !occupied.has(cellKey(x, y)) && !world.pumps.has(cellKey(x, y)),
+      !occupied.has(cellKey(x, y)) && !pipeCells.has(cellKey(x, y)),
   );
 }
 
@@ -154,13 +155,10 @@ export function captureRegion(world: World, region: Region): Clipboard {
       rel: [pm.machine.origin[0] - tlx, pm.machine.origin[1] - tly] as Cell,
       params: pm.machine.params ? { ...pm.machine.params } : undefined,
     }));
-  const pumps: Clipboard['pumps'] = [];
-  for (const [k, list] of world.pumps) {
-    const [x, y] = parseKey(k);
-    if (inside([x, y])) {
-      for (const pump of list) pumps.push({ rel: [x - tlx, y - tly], pump: { ...pump } });
-    }
-  }
+  // like machines, a pipeline overlapping the selection at all is taken whole
+  const pipelines: Clipboard['pipelines'] = world.pipelines
+    .filter((pl) => pl.cells.some(inside))
+    .map((pl) => ({ cells: pl.cells.map(([x, y]) => [x - tlx, y - tly] as Cell) }));
   return {
     w: region.w,
     h: region.h,
@@ -172,12 +170,13 @@ export function captureRegion(world: World, region: Region): Clipboard {
     ),
     outline: region.outline,
     machines,
-    pumps,
+    pipelines,
   };
 }
 
-// Stamp the clipboard down: machines that would collide are skipped;
-// pumps overwrite pumps but never machines.
+// Stamp the clipboard down: machines that would collide are skipped, and a
+// pipeline is skipped whole if any of its cells lands out of bounds or on a
+// machine.
 export function pasteClipboard(world: World, tl: Cell, clip: Clipboard): void {
   for (const m of clip.machines) {
     const machine: Machine = {
@@ -193,11 +192,11 @@ export function pasteClipboard(world: World, tl: Cell, clip: Clipboard): void {
     }
   }
   const occupied = machineCellMap(placeAll(world));
-  for (const p of clip.pumps) {
-    const x = tl[0] + p.rel[0];
-    const y = tl[1] + p.rel[1];
-    if (x < 0 || y < 0 || x >= world.w || y >= world.h) continue;
-    const k = cellKey(x, y);
-    if (!occupied.has(k)) world.pumps.set(k, mergePumps(world.pumps.get(k), { ...p.pump }));
+  for (const pl of clip.pipelines) {
+    const cells = pl.cells.map(([x, y]) => [tl[0] + x, tl[1] + y] as Cell);
+    const ok = cells.every(
+      ([x, y]) => x >= 0 && y >= 0 && x < world.w && y < world.h && !occupied.has(cellKey(x, y)),
+    );
+    if (ok && cells.length > 0) world.pipelines.push({ id: world.nextPipelineId++, cells });
   }
 }

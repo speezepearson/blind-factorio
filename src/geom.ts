@@ -1,4 +1,4 @@
-import type { Cell, Edge, Machine, MachineType, PortDef, Pump, Side } from './types';
+import type { Cell, Edge, Machine, MachineType, Pipeline, PortDef, Side } from './types';
 
 // World dimensions, in fine cells, and the on-canvas pixel size of one cell.
 export const GRID_W = 170;
@@ -28,8 +28,11 @@ export interface OrientedPump {
   outSide: Side;
 }
 
-// Given the cells a pipe passes through, orient a pump in each cell so fluid
-// flows along the path. Endpoints point straight through.
+// Per-cell flow directions along a pipeline's path: each cell takes fluid in
+// on the side facing the previous cell and passes it out toward the next.
+// Endpoints point straight through — the first cell pulls from just before
+// the path, the last pushes out just past it (that's where machine ports
+// attach).
 export function orientPath(path: Cell[]): OrientedPump[] {
   return path.map((cell, i) => {
     const prev = path[i - 1];
@@ -45,24 +48,14 @@ export function orientPath(path: Cell[]): OrientedPump[] {
   });
 }
 
-export type PumpAxis = 'h' | 'v' | 'bent';
+export const pipelinesAt = (pipelines: Pipeline[], [x, y]: Cell): Pipeline[] =>
+  pipelines.filter((pl) => pl.cells.some(([cx, cy]) => cx === x && cy === y));
 
-export function pumpAxis(p: Pump): PumpAxis {
-  const hIn = p.inSide % 2 === 1; // E/W are odd sides
-  const hOut = p.outSide % 2 === 1;
-  if (hIn && hOut) return 'h';
-  if (!hIn && !hOut) return 'v';
-  return 'bent';
-}
-
-// Merge a new pump into a cell's pump list. Straight pumps on perpendicular
-// axes cross without interfering; everything else replaces what's in the way.
-export function mergePumps(existing: Pump[] | undefined, p: Pump): Pump[] {
-  const axis = pumpAxis(p);
-  if (!existing || axis === 'bent') return [p];
-  const keep = existing.filter((q) => pumpAxis(q) !== axis && pumpAxis(q) !== 'bent');
-  return [...keep, p];
-}
+export const pipelineCellSet = (pipelines: Pipeline[]): Set<string> => {
+  const set = new Set<string>();
+  for (const pl of pipelines) for (const [x, y] of pl.cells) set.add(cellKey(x, y));
+  return set;
+};
 
 export interface PlacedPort {
   def: PortDef;

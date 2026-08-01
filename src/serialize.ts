@@ -1,19 +1,22 @@
 import { TYPE_BY_ID } from './machines';
-import type { Pump, World } from './types';
+import type { Pipeline, World } from './types';
 
 // World <-> shareable code: JSON, deflated, base64.
 //
 // Known limitation, by design: only world *structure* is serialized (machines,
-// params, pumps). Sim fluid and per-machine internal state (e.g. a buffer's
-// contents) are not — importing re-runs prewarm() to regenerate flow, so a
-// buffer shared mid-drain arrives empty and refills naturally.
+// params, pipelines). Sim fluid and per-machine internal state (e.g. a
+// buffer's contents) are not — importing re-runs prewarm() to regenerate
+// flow, so a buffer shared mid-drain arrives empty and refills naturally.
 
-interface WorldDocV1 {
-  v: 1;
+// v2: pipelines replaced per-cell pumps. v1 codes still load their machines,
+// but their pumps are dropped (the old cell-pump model has no translation
+// worth keeping in a prototype).
+interface WorldDoc {
+  v: 1 | 2;
   w: number;
   h: number;
   machines: World['machines'];
-  pumps: Array<[string, Pump[]]>;
+  pipelines?: Pipeline[];
 }
 
 // URL-safe base64 (- and _ instead of + and /) so codes survive in URL
@@ -41,12 +44,12 @@ async function pipeBytes(bytes: Uint8Array, transform: GenericTransformStream): 
 }
 
 export async function worldToCode(world: World): Promise<string> {
-  const doc: WorldDocV1 = {
-    v: 1,
+  const doc: WorldDoc = {
+    v: 2,
     w: world.w,
     h: world.h,
     machines: world.machines,
-    pumps: [...world.pumps.entries()],
+    pipelines: world.pipelines,
   };
   const bytes = new TextEncoder().encode(JSON.stringify(doc));
   return bytesToB64(await pipeBytes(bytes, new CompressionStream('deflate-raw')));
@@ -55,22 +58,22 @@ export async function worldToCode(world: World): Promise<string> {
 export async function worldFromCode(code: string): Promise<World> {
   const bytes = b64ToBytes(code.replace(/\s+/g, ''));
   const json = new TextDecoder().decode(await pipeBytes(bytes, new DecompressionStream('deflate-raw')));
-  const doc = JSON.parse(json) as WorldDocV1;
-  if (doc.v !== 1 || !Array.isArray(doc.machines) || !Array.isArray(doc.pumps)) {
-    throw new Error('not a v1 world document');
+  const doc = JSON.parse(json) as WorldDoc;
+  if ((doc.v !== 1 && doc.v !== 2) || !Array.isArray(doc.machines)) {
+    throw new Error('not a recognized world document');
   }
   const machines = doc.machines.filter((m) => TYPE_BY_ID[m.typeId]);
-  const isSide = (s: unknown) => typeof s === 'number' && Number.isInteger(s) && s >= 0 && s <= 3;
-  const pumps = new Map<string, Pump[]>();
-  for (const [k, list] of doc.pumps) {
-    const good = (list ?? []).filter((p) => isSide(p.inSide) && isSide(p.outSide));
-    if (good.length > 0) pumps.set(k, good);
-  }
+  const isCell = (c: unknown): c is [number, number] =>
+    Array.isArray(c) && c.length === 2 && c.every((n) => Number.isInteger(n));
+  const pipelines: Pipeline[] = (Array.isArray(doc.pipelines) ? doc.pipelines : [])
+    .filter((pl) => Array.isArray(pl?.cells) && pl.cells.length > 0 && pl.cells.every(isCell))
+    .map((pl, i) => ({ id: i + 1, cells: pl.cells }));
   return {
     w: doc.w,
     h: doc.h,
     machines,
-    pumps,
+    pipelines,
     nextMachineId: machines.reduce((a, m) => Math.max(a, m.id), 0) + 1,
+    nextPipelineId: pipelines.length + 1,
   };
 }

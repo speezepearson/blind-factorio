@@ -8,7 +8,7 @@ export interface Preset {
 }
 
 function emptyWorld(w: number, h: number): World {
-  return { w, h, pumps: new Map(), machines: [], nextMachineId: 1 };
+  return { w, h, pipelines: [], machines: [], nextMachineId: 1, nextPipelineId: 1 };
 }
 
 // Two sources and two sinks, all four of which *look* the same chartreuse

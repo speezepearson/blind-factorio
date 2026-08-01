@@ -1,10 +1,10 @@
 import {
-  CELL, DX, DY, cellKey, machineCellMap, orientPath, parseKey, perimeterSegments, placeMachine,
+  CELL, DX, DY, cellKey, machineCellMap, orientPath, perimeterSegments, placeMachine,
 } from './geom';
 import type { PlacedMachine } from './geom';
 import { TYPE_BY_ID, paleTint, totalRate } from './machines';
 import { mixtureColor, wavelengthColor } from './light';
-import { placeAll, pumpKey } from './sim';
+import { placeAll } from './sim';
 import type { SimState } from './sim';
 import { machinePlacementOk, bboxTL } from './clipboard';
 import type { Clipboard } from './clipboard';
@@ -81,16 +81,17 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     ctx.globalAlpha = 1;
   };
 
-  for (const [k, list] of world.pumps) {
-    const [x, y] = parseKey(k);
-    drawPumpBase(x, y);
-    for (const pump of list) {
-      // a pump carries a mixture; it draws as the combined light of every
-      // wavelength in it (which may be the unlit grey, if it's all infrared)
-      const fm = sim.pumpFluids.get(pumpKey(x, y, pump));
+  // each pipeline is a polyline; each of its cells draws with the combined
+  // light of the fluid at that point (pipelines through the same cell just
+  // overdraw each other)
+  for (const pl of world.pipelines) {
+    const contents = sim.pipeFluids.get(pl.id);
+    orientPath(pl.cells).forEach(({ cell: [x, y], inSide, outSide }, i) => {
+      drawPumpBase(x, y);
+      const fm = contents?.[i];
       const rate = totalRate(fm);
-      drawPumpArrow(x, y, pump.inSide, pump.outSide, rate > 1e-4 ? mixtureColor(fm) : null, rate);
-    }
+      drawPumpArrow(x, y, inSide, outSide, rate > 1e-4 ? mixtureColor(fm) : null, rate);
+    });
   }
 
   const drawMachine = (pm: PlacedMachine, alpha = 1, invalid = false) => {
