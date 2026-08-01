@@ -17,6 +17,7 @@ interface WorldDoc {
   h: number;
   machines: World['machines'];
   pipelines?: Pipeline[];
+  junctions?: World['junctions'];
 }
 
 // URL-safe base64 (- and _ instead of + and /) so codes survive in URL
@@ -50,6 +51,7 @@ export async function worldToCode(world: World): Promise<string> {
     h: world.h,
     machines: world.machines,
     pipelines: world.pipelines,
+    junctions: world.junctions,
   };
   const bytes = new TextEncoder().encode(JSON.stringify(doc));
   return bytesToB64(await pipeBytes(bytes, new CompressionStream('deflate-raw')));
@@ -68,12 +70,17 @@ export async function worldFromCode(code: string): Promise<World> {
   const pipelines: Pipeline[] = (Array.isArray(doc.pipelines) ? doc.pipelines : [])
     .filter((pl) => Array.isArray(pl?.cells) && pl.cells.length > 0 && pl.cells.every(isCell))
     .map((pl, i) => ({ id: i + 1, cells: pl.cells }));
+  const junctions = (Array.isArray(doc.junctions) ? doc.junctions : [])
+    .filter((j) => isCell(j?.cell))
+    .map((j, i) => ({ id: i + 1, cell: j.cell }));
   return {
     w: doc.w,
     h: doc.h,
     machines,
     pipelines,
+    junctions,
     nextMachineId: machines.reduce((a, m) => Math.max(a, m.id), 0) + 1,
     nextPipelineId: pipelines.length + 1,
+    nextJunctionId: junctions.length + 1,
   };
 }

@@ -94,6 +94,19 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     });
   }
 
+  // junction nodes: a small dot glowing with the summed flow passing through
+  for (const j of world.junctions) {
+    const fm = sim.junctionFlows.get(j.id);
+    const rate = totalRate(fm);
+    ctx.beginPath();
+    ctx.arc(j.cell[0] * CELL + CELL / 2, j.cell[1] * CELL + CELL / 2, 3.4, 0, 2 * Math.PI);
+    ctx.fillStyle = rate > 1e-4 ? mixtureColor(fm) : '#c6c9ce';
+    ctx.fill();
+    ctx.strokeStyle = '#4a4640';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
   const drawMachine = (pm: PlacedMachine, alpha = 1, invalid = false) => {
     const hidden = !view.godMode;
     ctx.globalAlpha = alpha;

@@ -24,10 +24,15 @@ npm run lint    # oxlint
 - The world is a fine grid (170×110 cells of 6px). Machines are authored on a coarser
   5× grid (`SCALE` in `machines.ts`), so a "2×2" machine really occupies 10×10 fine cells.
 - Fluid travels in **pipelines**: directed stretches of pipe (an ordered path of cells)
-  running through open space from one machine's edge to another's. Pipelines are edges
-  in a machine graph — each attaches (positionally) to an out-port at its intake and an
-  in-port at its outflow, and any number of pipelines may pass through the same cell
-  without interacting. (Merging/splitting junctions are planned, not built.)
+  running through open space. Pipelines are edges in a graph whose nodes are machines
+  and **junctions** — each attaches (positionally) to an out-port or junction at its
+  intake and an in-port or junction at its outflow. Any number of pipelines may pass
+  through the same cell without interacting: crossing never connects. Releasing a pipe
+  drag *on* an existing pipe splices in a junction (the trunk becomes two pipelines);
+  a junction sums its inflows and splits the total evenly among its outflows, so
+  merged pipes carry the sum (and visibly fatten — width ∝ √rate). Starting a drag on
+  a junction taps out of it. Erasing any cell of a pipeline removes that whole
+  stretch, endpoint to endpoint.
 - Machines have ports (contiguous runs of perimeter edges) and a `compute` function from
   per-port inputs to per-port outputs. Fluids are identified by **light wavelength**
   (400–800 nm), and every stream — in a pipe or at a port — is a whole **mixture**
@@ -47,9 +52,10 @@ npm run lint    # oxlint
   its stored mixture proportionally), sink (slurps everything, glows while the incoming
   wavelength composition matches its target mixture).
 - The sim ticks synchronously every 110 ms (`TICK_MS`); each pipeline's contents shift
-  one cell toward its far end per tick — the head refills from its source port's fresh
-  output, the tail delivers last tick's arrival to its destination port. `step()` is a
-  pure function `(world, prevSim, dt) -> nextSim`.
+  one cell toward its far end per tick — the head refills from its source (a port's
+  fresh output or a junction's summed inflow, split evenly among consumers), the tail
+  delivers last tick's arrival to its destination port or junction. `step()` is a pure
+  function `(world, prevSim, dt) -> nextSim`.
 
 ## Module map
 

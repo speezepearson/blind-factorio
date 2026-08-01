@@ -6,7 +6,11 @@ import type { Clipboard } from './clipboard';
 import type { Tool } from './render';
 import type { FluidMap, Machine, MixtureComponent, ParamDef, ParamValue, World } from './types';
 
-export type Hover = { kind: 'machine'; machineId: number } | { kind: 'pipe'; key: string } | null;
+export type Hover =
+  | { kind: 'machine'; machineId: number }
+  | { kind: 'junction'; id: number }
+  | { kind: 'pipe'; key: string }
+  | null;
 
 function FluidList({ fm }: { fm: FluidMap | undefined }) {
   const entries = Object.entries(fm ?? {}).filter(([, r]) => r > 1e-4).sort((a, b) => b[1] - a[1]);
@@ -159,6 +163,34 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
       </>
     );
   }
+  if (hover?.kind === 'junction') {
+    if (!godMode) {
+      return (
+        <>
+          <h2>Junction</h2>
+          <p className="rule dim">This junction keeps its secrets.</p>
+        </>
+      );
+    }
+    const junction = world.junctions.find((j) => j.id === hover.id);
+    if (!junction) return null;
+    const [jx, jy] = junction.cell;
+    const inflows = world.pipelines.filter(
+      (pl) => pl.cells.length > 1 && pl.cells[pl.cells.length - 1][0] === jx && pl.cells[pl.cells.length - 1][1] === jy,
+    ).length;
+    const outflows = world.pipelines.filter(
+      (pl) => pl.cells[0][0] === jx && pl.cells[0][1] === jy,
+    ).length;
+    return (
+      <>
+        <h2>Junction</h2>
+        <p className="rule">
+          Sums {inflows} inflow{inflows === 1 ? '' : 's'}, splits evenly into {outflows} outflow{outflows === 1 ? '' : 's'}. Passing through:
+        </p>
+        <p><FluidList fm={sim.junctionFlows.get(hover.id)} /></p>
+      </>
+    );
+  }
   if (hover?.kind === 'pipe') {
     const cell = parseKey(hover.key);
     const pls = pipelinesAt(world.pipelines, cell);
@@ -219,6 +251,7 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
       <h2>Sandbox</h2>
       <ul className="help">
         <li><b>Pipes:</b> click-drag to lay a pipeline from one machine to another — you can start the drag on a machine. Drag backwards to undo. Pipes can cross freely without connecting.</li>
+        <li><b>Merging:</b> release a pipe drag <i>on</i> an existing pipe to splice in a junction — the flows sum downstream. Start a drag on a junction to tap it. Erasing any segment removes that whole stretch of pipe, junction to junction.</li>
         <li><b>Copy/paste:</b> lasso (or click a square around) a patch of factory to stamp out elsewhere, machines included.</li>
         <li><b>Erase:</b> lasso (or click a square around) a region to wipe — pumps inside it are removed, and machines overlapping it even partially are removed whole.</li>
         <li>Hover anything to inspect its rule and live flows here.</li>

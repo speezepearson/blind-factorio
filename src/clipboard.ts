@@ -24,6 +24,7 @@ export interface Clipboard {
   outline: Array<[number, number]>; // boundary polygon in px, relative to the bbox
   machines: Array<{ typeId: string; rotation: number; rel: Cell; params?: Record<string, ParamValue> }>;
   pipelines: Array<{ cells: Cell[] }>; // cells relative to the bbox, in flow order
+  junctions: Array<{ rel: Cell }>;
   // visual snapshot of the copied region's bounding box at copy time — shown
   // (clipped to the outline) as the paste ghost
   snapshot?: HTMLCanvasElement;
@@ -127,6 +128,7 @@ export function rotateClipboard(clip: Clipboard): Clipboard {
     pipelines: clip.pipelines.map((pl) => ({
       cells: pl.cells.map(([x, y]) => [h - 1 - y, x] as Cell),
     })),
+    junctions: clip.junctions.map((j) => ({ rel: [h - 1 - j.rel[1], j.rel[0]] as Cell })),
     snapshot: clip.snapshot ? rotateCanvas90(clip.snapshot) : undefined,
   };
 }
@@ -137,6 +139,7 @@ export function rotateClipboard(clip: Clipboard): Clipboard {
 export function machinePlacementOk(world: World, placed: PlacedMachine, ignoreId?: number): boolean {
   const occupied = machineCellMap(placeAll(world).filter((pm) => pm.machine.id !== ignoreId));
   const pipeCells = pipelineCellSet(world.pipelines);
+  for (const j of world.junctions) pipeCells.add(cellKey(j.cell[0], j.cell[1]));
   return placed.cells.every(
     ([x, y]) =>
       x >= 0 && y >= 0 && x < world.w && y < world.h &&
@@ -159,6 +162,9 @@ export function captureRegion(world: World, region: Region): Clipboard {
   const pipelines: Clipboard['pipelines'] = world.pipelines
     .filter((pl) => pl.cells.some(inside))
     .map((pl) => ({ cells: pl.cells.map(([x, y]) => [x - tlx, y - tly] as Cell) }));
+  const junctions: Clipboard['junctions'] = world.junctions
+    .filter((j) => inside(j.cell))
+    .map((j) => ({ rel: [j.cell[0] - tlx, j.cell[1] - tly] as Cell }));
   return {
     w: region.w,
     h: region.h,
@@ -171,6 +177,7 @@ export function captureRegion(world: World, region: Region): Clipboard {
     outline: region.outline,
     machines,
     pipelines,
+    junctions,
   };
 }
 
@@ -192,6 +199,14 @@ export function pasteClipboard(world: World, tl: Cell, clip: Clipboard): void {
     }
   }
   const occupied = machineCellMap(placeAll(world));
+  for (const j of clip.junctions) {
+    const cell: Cell = [tl[0] + j.rel[0], tl[1] + j.rel[1]];
+    const clear =
+      cell[0] >= 0 && cell[1] >= 0 && cell[0] < world.w && cell[1] < world.h &&
+      !occupied.has(cellKey(cell[0], cell[1])) &&
+      !world.junctions.some((existing) => existing.cell[0] === cell[0] && existing.cell[1] === cell[1]);
+    if (clear) world.junctions.push({ id: world.nextJunctionId++, cell });
+  }
   for (const pl of clip.pipelines) {
     const cells = pl.cells.map(([x, y]) => [tl[0] + x, tl[1] + y] as Cell);
     const ok = cells.every(

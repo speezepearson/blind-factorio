@@ -33,7 +33,8 @@ function freshWorld(): { world: World; sim: SimState } {
   return { world, sim: prewarm(world) };
 }
 
-const hoverKey = (h: Hover): string => (h === null ? '' : h.kind === 'machine' ? `m${h.machineId}` : `p${h.key}`);
+const hoverKey = (h: Hover): string =>
+  h === null ? '' : h.kind === 'machine' ? `m${h.machineId}` : h.kind === 'junction' ? `j${h.id}` : `p${h.key}`;
 
 function Slider({ label, title, min, max, step, value, onChange }: {
   label: string; title?: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void;
@@ -148,19 +149,26 @@ export default function App() {
     let next: Hover = null;
     if (cell) {
       const k = cellKey(cell[0], cell[1]);
-      const pm = machineCellMap(placeAll(worldRef.current)).get(k);
+      const world = worldRef.current;
+      const pm = machineCellMap(placeAll(world)).get(k);
+      const junction = world.junctions.find((j) => j.cell[0] === cell[0] && j.cell[1] === cell[1]);
       if (pm) next = { kind: 'machine', machineId: pm.machine.id };
-      else if (pipelinesAt(worldRef.current.pipelines, cell).length > 0) next = { kind: 'pipe', key: k };
+      else if (junction) next = { kind: 'junction', id: junction.id };
+      else if (pipelinesAt(world.pipelines, cell).length > 0) next = { kind: 'pipe', key: k };
     }
     setHover((h) => (hoverKey(h) === hoverKey(next) ? h : next));
   };
 
-  // Wipe a region: pipelines touching it and machines overlapping it even
-  // partially go whole.
+  // Wipe a region: junctions in it, pipelines touching it, and machines
+  // overlapping it even partially all go — a pipeline always vanishes whole,
+  // back to its endpoint machines/junctions.
   const eraseRegion = (region: Region) => {
     const world = worldRef.current;
     world.pipelines = world.pipelines.filter(
       (pl) => !pl.cells.some(([x, y]) => region.cells.has(cellKey(x, y))),
+    );
+    world.junctions = world.junctions.filter(
+      (j) => !region.cells.has(cellKey(j.cell[0], j.cell[1])),
     );
     const doomed = new Set(
       placeAll(world)
@@ -172,13 +180,32 @@ export default function App() {
 
   // A finished pipe drag becomes one pipeline. The drag may have anchored on
   // a machine cell (that's how you start from a machine) — strip those; the
-  // pipeline's endpoints attach to whatever port edges they touch.
+  // pipeline's endpoints attach to whatever port edges they touch. Releasing
+  // ON an existing pipe splices it: a junction appears there, the trunk
+  // becomes two pipelines, and the new pipe's outflow joins the junction.
+  // Crossing a pipe mid-drag never connects — only where you let go.
   const commitPipePath = (path: Cell[]) => {
     const world = worldRef.current;
     const occupied = machineCellMap(placeAll(world));
     const cells = path.filter((c) => !occupied.has(cellKey(c[0], c[1])));
     if (cells.length === 0) return;
     checkpoint();
+    const last = cells[cells.length - 1];
+    const onJunction = world.junctions.some((j) => j.cell[0] === last[0] && j.cell[1] === last[1]);
+    if (!onJunction && cells.length > 1) {
+      // most recently drawn pipeline under the release point wins
+      const trunk = pipelinesAt(world.pipelines, last).at(-1);
+      if (trunk) {
+        const idx = trunk.cells.findIndex((c) => c[0] === last[0] && c[1] === last[1]);
+        world.junctions.push({ id: world.nextJunctionId++, cell: last });
+        world.pipelines = world.pipelines.filter((pl) => pl.id !== trunk.id);
+        // both halves keep the junction cell, so their endpoints sit on it
+        const upstream = trunk.cells.slice(0, idx + 1);
+        const downstream = trunk.cells.slice(idx);
+        if (upstream.length > 1) world.pipelines.push({ id: trunk.id, cells: upstream });
+        if (downstream.length > 1) world.pipelines.push({ id: world.nextPipelineId++, cells: downstream });
+      }
+    }
     world.pipelines.push({ id: world.nextPipelineId++, cells });
   };
 

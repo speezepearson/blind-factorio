@@ -1,4 +1,4 @@
-import { DX, DY, opposite, orientPath, placeMachine } from './geom';
+import { DX, DY, cellKey, opposite, orientPath, placeMachine } from './geom';
 import type { PlacedMachine } from './geom';
 import { TYPE_BY_ID } from './machines';
 import type { FluidMap, ParamValue, World } from './types';
@@ -9,12 +9,14 @@ const RATE_CAP = 1000;
 export interface SimState {
   // pipelineId -> per-cell contents, aligned with Pipeline.cells
   pipeFluids: Map<number, FluidMap[]>;
+  junctionFlows: Map<number, FluidMap>; // junctionId -> this tick's summed inflow
   machineIO: Map<number, { inputs: Record<string, FluidMap>; outputs: Record<string, FluidMap> }>;
   machineStates: Map<number, Record<string, unknown>>; // per-machine persistent state
 }
 
 export const emptySim = (): SimState => ({
   pipeFluids: new Map(),
+  junctionFlows: new Map(),
   machineIO: new Map(),
   machineStates: new Map(),
 });
@@ -50,30 +52,53 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
     }
   }
 
+  const junctionAt = new Map<string, number>(); // cellKey -> junctionId
+  for (const j of world.junctions) junctionAt.set(cellKey(j.cell[0], j.cell[1]), j.id);
+
   // Resolve each pipeline's endpoint attachments; collect deliveries (from
-  // last tick's contents) and count each out-port's consumers.
-  const srcOf = new Map<number, string>(); // pipelineId -> out-portKey
-  const consumers = new Map<string, number>(); // out-portKey -> #pipelines drawing
+  // last tick's contents) and count each source's consumers. Sources/sinks
+  // are keyed "p:machineId:portId" for ports, "j:junctionId" for junctions;
+  // a head/tail cell sitting on a junction attaches there, otherwise the
+  // cell just beyond the endpoint may be a machine port edge.
+  const srcOf = new Map<number, string>(); // pipelineId -> source key
+  const consumers = new Map<string, number>(); // source key -> #pipelines drawing
   const deliveries = new Map<string, FluidMap>(); // in-portKey -> summed arrivals
+  const junctionFlows = new Map<number, FluidMap>(); // junctionId -> summed arrivals
   for (const pl of world.pipelines) {
     if (pl.cells.length === 0) continue;
     const oriented = orientPath(pl.cells);
     const first = oriented[0];
     const last = oriented[oriented.length - 1];
-    const src = portAtEdge.get(
-      edgeKey(first.cell[0] + DX[first.inSide], first.cell[1] + DY[first.inSide], opposite(first.inSide)),
-    );
-    if (src?.kind === 'out') {
-      const key = portKey(src.machineId, src.portId);
+
+    const headJunction = junctionAt.get(cellKey(first.cell[0], first.cell[1]));
+    if (headJunction !== undefined) {
+      const key = `j:${headJunction}`;
       srcOf.set(pl.id, key);
       consumers.set(key, (consumers.get(key) ?? 0) + 1);
+    } else {
+      const src = portAtEdge.get(
+        edgeKey(first.cell[0] + DX[first.inSide], first.cell[1] + DY[first.inSide], opposite(first.inSide)),
+      );
+      if (src?.kind === 'out') {
+        const key = `p:${portKey(src.machineId, src.portId)}`;
+        srcOf.set(pl.id, key);
+        consumers.set(key, (consumers.get(key) ?? 0) + 1);
+      }
     }
-    const dst = portAtEdge.get(
-      edgeKey(last.cell[0] + DX[last.outSide], last.cell[1] + DY[last.outSide], opposite(last.outSide)),
-    );
-    if (dst?.kind === 'in') {
-      const arriving = prev.pipeFluids.get(pl.id)?.[pl.cells.length - 1];
-      if (arriving) {
+
+    const arriving = prev.pipeFluids.get(pl.id)?.[pl.cells.length - 1];
+    // a single-cell pipeline on a junction only draws from it (no self-loop)
+    const tailJunction =
+      pl.cells.length > 1 ? junctionAt.get(cellKey(last.cell[0], last.cell[1])) : undefined;
+    if (tailJunction !== undefined) {
+      const into = junctionFlows.get(tailJunction) ?? {};
+      addFluids(into, arriving);
+      junctionFlows.set(tailJunction, into);
+    } else {
+      const dst = portAtEdge.get(
+        edgeKey(last.cell[0] + DX[last.outSide], last.cell[1] + DY[last.outSide], opposite(last.outSide)),
+      );
+      if (dst?.kind === 'in' && arriving) {
         const key = portKey(dst.machineId, dst.portId);
         const into = deliveries.get(key) ?? {};
         addFluids(into, arriving);
@@ -115,7 +140,7 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
 
     for (const port of pm.ports) {
       const out = outputs[port.def.id];
-      if (out && Object.keys(out).length > 0) outputsByPort.set(portKey(pm.machine.id, port.def.id), out);
+      if (out && Object.keys(out).length > 0) outputsByPort.set(`p:${portKey(pm.machine.id, port.def.id)}`, out);
     }
   }
 
@@ -128,7 +153,11 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
     for (let i = pl.cells.length - 1; i > 0; i--) arr[i] = prevArr[i - 1] ?? {};
     const intake: FluidMap = {};
     const srcKey = srcOf.get(pl.id);
-    const out = srcKey ? outputsByPort.get(srcKey) : undefined;
+    const out = srcKey?.startsWith('j:')
+      ? junctionFlows.get(Number(srcKey.slice(2)))
+      : srcKey
+        ? outputsByPort.get(srcKey)
+        : undefined;
     if (srcKey && out) {
       const share = Math.max(1, consumers.get(srcKey) ?? 1);
       for (const [wl, rate] of Object.entries(out)) {
@@ -139,5 +168,5 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
     pipeFluids.set(pl.id, arr);
   }
 
-  return { pipeFluids, machineIO, machineStates };
+  return { pipeFluids, junctionFlows, machineIO, machineStates };
 }

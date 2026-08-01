@@ -81,21 +81,33 @@ export interface Machine {
 }
 
 // A stretch of pipe: an ordered path of cells along which fluid flows, one
-// cell per tick, from cells[0] to the far end. The endpoint just before
-// cells[0] may attach to a machine's out-port (its source) and the endpoint
-// just past the last cell to an in-port (its destination) — so pipelines are
-// directed edges in a machine graph. Any number of pipelines may pass
-// through the same cell; they never interact.
+// cell per tick, from cells[0] to the far end. Endpoints attach
+// positionally: the cell just before cells[0] may be a machine out-port edge
+// (its source) and the cell just past the last an in-port edge (its
+// destination); alternatively, a head or tail cell sitting ON a junction
+// attaches to that junction. So pipelines are directed edges in a graph
+// whose nodes are machines and junctions. Any number of pipelines may pass
+// through the same cell; only endpoints ever connect.
 export interface Pipeline {
   id: number;
   cells: Cell[];
+}
+
+// A merge/split node created by ending (or starting) a pipe drag on an
+// existing pipe: sums whatever its inflow pipes deliver and splits the total
+// evenly among its outflow pipes.
+export interface Junction {
+  id: number;
+  cell: Cell;
 }
 
 export interface World {
   w: number;
   h: number;
   pipelines: Pipeline[];
+  junctions: Junction[];
   machines: Machine[];
   nextMachineId: number;
   nextPipelineId: number;
+  nextJunctionId: number;
 }
