@@ -1,5 +1,5 @@
-import { WL_MAX, WL_MIN } from './light';
-import type { Cell, Edge, FluidMap, MachineType } from './types';
+import { WL_MAX, WL_MIN, mixtureColor } from './light';
+import type { Cell, Edge, FluidMap, MachineType, ParamValue } from './types';
 
 export function totalRate(fm: FluidMap | undefined): number {
   if (!fm) return 0;
@@ -83,6 +83,14 @@ function targetMixture(wlA: number, wlB: number, mixB: number): FluidMap {
   return t;
 }
 
+// the exact color of the two-wavelength mixture a machine produces/wants
+const twoWlColor = (params: Record<string, ParamValue>, fallbackWl: number): string =>
+  mixtureColor(targetMixture(
+    asWavelength(params.colorA ?? params.color, fallbackWl),
+    asWavelength(params.colorB, fallbackWl),
+    clamp01(Number(params.mixB)),
+  ));
+
 // the full perimeter of a scaled 2x2 shape, for machines open on every side
 const RING_2X2: Edge[] = scaleEdges([
   [[0, 0], 0], [[1, 0], 0],
@@ -109,7 +117,9 @@ export const MACHINE_TYPES: MachineType[] = [
     ruleText:
       'Produces fluid at its configured rate, offered from every edge (port A spans the ' +
       'whole perimeter): a mixture of its two wavelengths in the configured shares ' +
-      '(share 0 = pure wavelength A, the default). Needs no inputs.',
+      '(share 0 = pure wavelength A, the default). Its body is painted exactly like ' +
+      'the fluid it produces. Needs no inputs.',
+    fluidColor: (params) => twoWlColor(params, 650),
     compute: (_inputs, params): Record<string, FluidMap> => {
       const rate = Number(params.rate);
       const out: FluidMap = {};
@@ -291,7 +301,9 @@ export const MACHINE_TYPES: MachineType[] = [
       'matches its target mixture (two wavelengths in configured shares): each target ' +
       "component must make up its share of what's arriving, judged by wavelength within " +
       'the tolerance — the right-looking light made of the wrong wavelengths stays ' +
-      'dark. Needs at least 0.5 L/s in total.',
+      'dark. Needs at least 0.5 L/s in total. Its body is painted exactly like the ' +
+      'mixture it wants.',
+    fluidColor: (params) => twoWlColor(params, 580),
     compute: (inputs, params, ctx): Record<string, FluidMap> => {
       const fm = inputs.in ?? {};
       const total = totalRate(fm);

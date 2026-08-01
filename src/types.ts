@@ -55,6 +55,10 @@ export interface MachineType {
     params: Record<string, ParamValue>,
     ctx: ComputeCtx,
   ) => Record<string, FluidMap>;
+  // optional exact body color derived from params (e.g. a spring painted
+  // precisely like the fluid it produces); machines without it fall back to
+  // a pale tint of their first wavelength param, or bodyColor
+  fluidColor?: (params: Record<string, ParamValue>) => string;
   // optional one-line live summary of the machine's internal state
   describeState?: (state: Record<string, unknown>) => string;
   // optional halo color while the machine is in a special state (e.g. a

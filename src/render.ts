@@ -10,7 +10,7 @@ import { machinePlacementOk, bboxTL } from './clipboard';
 import type { Clipboard } from './clipboard';
 import { SELECTION_RIPPLE_SALT, prepRipple, traceWarpedPoly } from './warp';
 import type { Obscura } from './warp';
-import type { Cell, Side, World } from './types';
+import type { Cell, ParamValue, Side, World } from './types';
 
 export type Tool =
   | { kind: 'pipe' }
@@ -127,11 +127,22 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
   const drawMachine = (pm: PlacedMachine, alpha = 1, invalid = false) => {
     const hidden = !view.godMode;
     ctx.globalAlpha = alpha;
-    // a machine with a wavelength param wears a pale tint of that light
+    // Springs/sinks are painted exactly like the fluid they produce/want;
+    // other machines with a wavelength param wear a pale tint of that light.
+    // (Player mode hides all of this behind the anonymous grey.)
+    const params: Record<string, ParamValue> = {};
+    for (const pd of pm.type.params ?? []) params[pd.key] = pd.default;
+    Object.assign(params, pm.machine.params);
     const colorDef = pm.type.params?.find((pd) => pd.kind === 'wavelength');
-    const paramWl = colorDef ? pm.machine.params?.[colorDef.key] ?? colorDef.default : null;
-    const body = paramWl !== null ? paleTint(wavelengthColor(Number(paramWl))) : pm.type.bodyColor;
+    const body = pm.type.fluidColor
+      ? pm.type.fluidColor(params)
+      : colorDef
+        ? paleTint(wavelengthColor(Number(params[colorDef.key])))
+        : pm.type.bodyColor;
     ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#dcd8cf' : body;
+    // label ink that stays readable on saturated/dark fluid colors
+    const [br, bg, bb] = [1, 3, 5].map((i) => parseInt(body.slice(i, i + 2), 16));
+    const ink = hidden || 0.2126 * br + 0.7152 * bg + 0.0722 * bb > 120 ? '#2b2823' : '#f6f3ec';
     for (const [x, y] of pm.cells) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
     // glow halo (e.g. a satisfied sink) — deliberately visible to the player
     const glow = pm.type.glow?.(sim.machineStates.get(pm.machine.id) ?? {});
@@ -180,7 +191,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
       // label near the middle edge of the port
       const [[lx, ly], ls] = port.edges[Math.floor((port.edges.length - 1) / 2)];
       const [ex, ey] = edgeMid(lx, ly, ls);
-      ctx.fillStyle = '#333';
+      ctx.fillStyle = ink;
       ctx.font = 'bold 10px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -202,7 +213,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
       // machine name at footprint center
       const cxs = pm.cells.map(([x]) => x * CELL + CELL / 2);
       const cys = pm.cells.map(([, y]) => y * CELL + CELL / 2);
-      ctx.fillStyle = '#2b2823';
+      ctx.fillStyle = ink;
       ctx.font = '10px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
