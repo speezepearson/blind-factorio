@@ -1,5 +1,5 @@
 import { WL_MAX, WL_MIN, mixtureColor } from './light';
-import type { Cell, Edge, FluidMap, MachineType, ParamValue } from './types';
+import type { Budget, Cell, Edge, FluidMap, MachineType, ParamValue } from './types';
 
 export function totalRate(fm: FluidMap | undefined): number {
   if (!fm) return 0;
@@ -109,6 +109,19 @@ const twoWlColor = (params: Record<string, ParamValue>, fallbackWl: number): str
     asWavelength(params.colorB, fallbackWl),
     clamp01(Number(params.mixB)),
   ));
+
+// ---- fabricator ------------------------------------------------------------
+
+// Sim-seconds to build one unit of each product. Pipe is one *cell* per
+// unit, hence very fast; machines take a few seconds each.
+export const BUILD_TIME: Record<string, number> = {
+  pipe: 0.4, spring: 4, reactor: 6, funnel: 3, blender: 3, filter: 5, buffer: 4, sink: 4, fabricator: 8,
+};
+
+// How much a wavelength counts toward the fabricator's 5 L/s red-power
+// requirement: 1 at pure 650 nm, fading to 0 by ±80 nm, then *negative*
+// (capped at −1) — far-from-red light actively fights the build.
+const redness = (wl: number) => Math.max(-1, 1 - ((wl - 650) / 80) ** 2);
 
 // the full perimeter of a scaled 2x2 shape, for machines open on every side
 const RING_2X2: Edge[] = scaleEdges([
@@ -334,8 +347,76 @@ export const MACHINE_TYPES: MachineType[] = [
     },
     glow: (state) => (state.lit ? '#ffd84a' : null),
   },
+  {
+    id: 'fabricator',
+    name: 'Fabricator',
+    bodyColor: '#e6c39c',
+    cells: scaleCells([[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]]),
+    ports: [
+      { id: 'in', label: 'A', kind: 'in', edges: scaleEdges([[[0, 0], 3], [[0, 1], 3]]) },
+    ],
+    params: [
+      {
+        key: 'make', label: 'Makes', kind: 'choice', default: 'pipe',
+        options: [
+          { value: 'pipe', label: 'Pipe (1 cell)' },
+          { value: 'spring', label: 'Spring' },
+          { value: 'reactor', label: 'Reactor' },
+          { value: 'funnel', label: 'Funnel' },
+          { value: 'blender', label: 'Blender' },
+          { value: 'filter', label: 'Filter' },
+          { value: 'buffer', label: 'Buffer' },
+          { value: 'sink', label: 'Sink' },
+          { value: 'fabricator', label: 'Fabricator' },
+        ],
+      },
+    ],
+    ruleText:
+      'Builds its configured product from red light: it needs 5 L/s of 650 nm red at ' +
+      'port A to run at full speed. Off-red light counts at a discount, and light far ' +
+      'from red counts *against* the requirement. Each finished item fills in a ghost ' +
+      'of the matching kind (pipe ghosts one cell at a time); with no ghost to fill, ' +
+      'it holds the finished item until one appears. The bar shows its progress.',
+    compute: (inputs, params, ctx): Record<string, FluidMap> => {
+      const st = ctx.state as { making?: string; progress?: number; ready?: boolean; speed?: number };
+      const kind = typeof params.make === 'string' && BUILD_TIME[params.make] ? params.make : 'pipe';
+      if (st.making !== kind) {
+        // retooling scraps any partial (or queued) build
+        st.making = kind;
+        st.progress = 0;
+        st.ready = false;
+      }
+      let power = 0;
+      for (const [wl, rate] of Object.entries(inputs.in ?? {})) power += rate * redness(Number(wl));
+      st.speed = clamp01(power / 5);
+      if (!st.ready) {
+        st.progress = Math.min(BUILD_TIME[kind], (st.progress ?? 0) + ctx.dt * st.speed);
+        if (st.progress >= BUILD_TIME[kind]) st.ready = true;
+      }
+      return {};
+    },
+    describeState: (state) => {
+      const kind = String(state.making ?? 'pipe');
+      if (state.ready) return `Holding a finished ${kind} — waiting for a ghost to fill.`;
+      const t = BUILD_TIME[kind] ?? 1;
+      const pct = Math.round((100 * Math.min(Number(state.progress) || 0, t)) / t);
+      return `Making ${kind}: ${pct}%, at ${Math.round(100 * (Number(state.speed) || 0))}% speed.`;
+    },
+    progress: (state) => {
+      if (state.ready) return 1;
+      const t = BUILD_TIME[String(state.making ?? 'pipe')] ?? 1;
+      return Math.min(1, (Number(state.progress) || 0) / t);
+    },
+  },
 ];
 
 export const TYPE_BY_ID: Record<string, MachineType> = Object.fromEntries(
   MACHINE_TYPES.map((t) => [t.id, t]),
 );
+
+// A roomy sandbox budget, used wherever a world doesn't specify its own
+// (blank worlds, imported legacy codes).
+export const defaultBudget = (): Budget => ({
+  pipe: 2000,
+  machines: Object.fromEntries(MACHINE_TYPES.map((t) => [t.id, 10])),
+});

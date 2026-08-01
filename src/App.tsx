@@ -3,7 +3,7 @@ import {
   CELL, GRID_H, GRID_W, cellKey, machineCellMap, pipelinesAt, placeMachine,
 } from './geom';
 import { MACHINE_TYPES, TYPE_BY_ID } from './machines';
-import { emptySim, placeAll, step } from './sim';
+import { danglingTailAt, emptySim, placeAll, step } from './sim';
 import type { SimState } from './sim';
 import { worldFromCode, worldToCode } from './serialize';
 import { buildStarterWorld } from './starter';
@@ -161,40 +161,81 @@ export default function App() {
 
   // Wipe a region: junctions in it, pipelines touching it, and machines
   // overlapping it even partially all go — a pipeline always vanishes whole,
-  // back to its endpoint machines/junctions.
+  // back to its endpoint machines/junctions. In player mode, erased real
+  // parts flow back into the budget (ghosts were never paid for).
   const eraseRegion = (region: Region) => {
     const world = worldRef.current;
-    world.pipelines = world.pipelines.filter(
-      (pl) => !pl.cells.some(([x, y]) => region.cells.has(cellKey(x, y))),
+    const refund = !godModeRef.current;
+    const goners = world.pipelines.filter(
+      (pl) => pl.cells.some(([x, y]) => region.cells.has(cellKey(x, y))),
     );
+    if (goners.length > 0) {
+      const ids = new Set(goners.map((pl) => pl.id));
+      world.pipelines = world.pipelines.filter((pl) => !ids.has(pl.id));
+      if (refund) {
+        for (const pl of goners) if (!pl.ghost) world.budget.pipe += pl.cells.length;
+      }
+    }
     world.junctions = world.junctions.filter(
       (j) => !region.cells.has(cellKey(j.cell[0], j.cell[1])),
     );
-    const doomed = new Set(
-      placeAll(world)
-        .filter((pm) => pm.cells.some(([x, y]) => region.cells.has(cellKey(x, y))))
-        .map((pm) => pm.machine.id),
+    const doomedPms = placeAll(world).filter(
+      (pm) => pm.cells.some(([x, y]) => region.cells.has(cellKey(x, y))),
     );
-    if (doomed.size > 0) world.machines = world.machines.filter((m) => !doomed.has(m.id));
+    if (doomedPms.length > 0) {
+      const doomed = new Set(doomedPms.map((pm) => pm.machine.id));
+      world.machines = world.machines.filter((m) => !doomed.has(m.id));
+      if (refund) {
+        for (const pm of doomedPms) {
+          if (!pm.machine.ghost) {
+            world.budget.machines[pm.machine.typeId] = (world.budget.machines[pm.machine.typeId] ?? 0) + 1;
+          }
+        }
+      }
+    }
   };
 
-  // A finished pipe drag becomes one pipeline. The drag may have anchored on
-  // a machine cell (that's how you start from a machine) — strip those; the
-  // pipeline's endpoints attach to whatever port edges they touch. Releasing
-  // ON an existing pipe splices it: a junction appears there, the trunk
-  // becomes two pipelines, and the new pipe's outflow joins the junction.
-  // Crossing a pipe mid-drag never connects — only where you let go.
-  const commitPipePath = (path: Cell[]) => {
+  // A finished pipe drag becomes one pipeline — or, if it started on an
+  // existing pipeline's dangling tail (extendId), that pipeline just grows.
+  // The drag may have anchored on a machine cell (that's how you start from
+  // a machine) — strip those; the pipeline's endpoints attach to whatever
+  // port edges they touch. Releasing ON an existing pipe splices it: a
+  // junction appears there, the trunk becomes two pipelines, and the new
+  // pipe's outflow joins the junction. Crossing a pipe mid-drag never
+  // connects — only where you let go. In player mode the new cells come out
+  // of the pipe budget; whatever can't be paid for is laid as a ghost.
+  const commitPipePath = (path: Cell[], extendId?: number) => {
     const world = worldRef.current;
     const occupied = machineCellMap(placeAll(world));
-    const cells = path.filter((c) => !occupied.has(cellKey(c[0], c[1])));
+    let cells = path.filter((c) => !occupied.has(cellKey(c[0], c[1])));
+    const base =
+      extendId === undefined ? undefined : world.pipelines.find((pl) => pl.id === extendId && !pl.ghost);
+    if (base) {
+      // the drag anchored on the base's old tail cell — don't add it twice
+      const [tx, ty] = base.cells[base.cells.length - 1];
+      if (cells.length > 0 && cells[0][0] === tx && cells[0][1] === ty) cells = cells.slice(1);
+    }
     if (cells.length === 0) return;
     checkpoint();
-    const last = cells[cells.length - 1];
-    const onJunction = world.junctions.some((j) => j.cell[0] === last[0] && j.cell[1] === last[1]);
-    if (!onJunction && cells.length > 1) {
+
+    let afford = cells.length;
+    if (!godModeRef.current) {
+      afford = Math.min(cells.length, Math.max(0, Math.floor(world.budget.pipe)));
+      world.budget.pipe -= afford;
+    }
+    const real = cells.slice(0, afford);
+    const ghostCells = cells.slice(afford);
+    const realCells = base ? [...base.cells, ...real] : real;
+
+    // splice only when the built (non-ghost) pipe actually reaches the
+    // release point
+    if (ghostCells.length === 0 && real.length > 0 && realCells.length > 1) {
+      const last = realCells[realCells.length - 1];
+      const onJunction = world.junctions.some((j) => j.cell[0] === last[0] && j.cell[1] === last[1]);
       // most recently drawn pipeline under the release point wins
-      const trunk = pipelinesAt(world.pipelines, last).at(-1);
+      const trunk = onJunction
+        ? undefined
+        : pipelinesAt(world.pipelines, last).filter((pl) => !pl.ghost && pl.id !== base?.id).at(-1);
       if (trunk) {
         const idx = trunk.cells.findIndex((c) => c[0] === last[0] && c[1] === last[1]);
         world.junctions.push({ id: world.nextJunctionId++, cell: last });
@@ -213,7 +254,14 @@ export default function App() {
         }
       }
     }
-    world.pipelines.push({ id: world.nextPipelineId++, cells });
+
+    if (real.length > 0) {
+      if (base) base.cells = realCells;
+      else world.pipelines.push({ id: world.nextPipelineId++, cells: realCells });
+    }
+    if (ghostCells.length > 0) {
+      world.pipelines.push({ id: world.nextPipelineId++, cells: ghostCells, ghost: true });
+    }
   };
 
   const extendPath = (path: Cell[], target: Cell, blocked: (c: Cell) => boolean) => {
@@ -380,8 +428,10 @@ export default function App() {
     if (!cell) return;
     const t = toolRef.current;
     if (t.kind === 'pipe') {
-      // starting on a machine is fine: pumps appear once the drag leaves it
-      dragRef.current = { mode: 'pipe', path: [cell] };
+      // starting on a machine is fine: pumps appear once the drag leaves it.
+      // Starting on a pipeline's dangling tail picks that pipeline back up.
+      const ext = danglingTailAt(worldRef.current, cell);
+      dragRef.current = { mode: 'pipe', path: [cell], extendId: ext?.id };
     } else if (t.kind === 'erase') {
       const p = eventPx(e);
       if (p) dragRef.current = { mode: 'lasso', tool: 'erase', points: [p] };
@@ -412,7 +462,7 @@ export default function App() {
       const clip = clipboardRef.current;
       if (clip) {
         checkpoint();
-        pasteClipboard(worldRef.current, bboxTL(cell, clip.w, clip.h), clip);
+        pasteClipboard(worldRef.current, bboxTL(cell, clip.w, clip.h), clip, !godModeRef.current);
       } else {
         const p = eventPx(e);
         if (p) dragRef.current = { mode: 'lasso', tool: 'copy', points: [p] };
@@ -464,7 +514,7 @@ export default function App() {
   const endDrag = () => {
     const drag = dragRef.current;
     dragRef.current = null;
-    if (drag?.mode === 'pipe') commitPipePath(drag.path);
+    if (drag?.mode === 'pipe') commitPipePath(drag.path, drag.extendId);
     else if (drag?.mode === 'lasso') commitLasso(drag);
     draw();
   };
@@ -538,6 +588,15 @@ export default function App() {
   const onParamChange = (machine: Machine, pd: ParamDef, v: ParamValue) => {
     checkpoint(`param:${machine.id}:${pd.key}`);
     machine.params = { ...machine.params, [pd.key]: v };
+    setTick((t) => t + 1);
+  };
+
+  // God-mode editor for the player's budget (null typeId = the pipe stock).
+  const onBudgetChange = (typeId: string | null, value: number) => {
+    checkpoint('budget');
+    const v = Math.max(0, Math.round(Number.isFinite(value) ? value : 0));
+    if (typeId === null) worldRef.current.budget.pipe = v;
+    else worldRef.current.budget.machines[typeId] = v;
     setTick((t) => t + 1);
   };
 
@@ -651,6 +710,7 @@ export default function App() {
             clipboard={clipboard}
             copySize={copySize}
             onParamChange={onParamChange}
+            onBudgetChange={onBudgetChange}
           />
         </div>
       </div>

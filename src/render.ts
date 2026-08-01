@@ -18,7 +18,7 @@ export type Tool =
   | { kind: 'place'; typeId: string };
 
 export type DragState =
-  | { mode: 'pipe'; path: Cell[] }
+  | { mode: 'pipe'; path: Cell[]; extendId?: number } // extendId: pipeline being continued from its dangling tail
   | { mode: 'lasso'; tool: 'copy' | 'erase'; points: Array<[number, number]> } // points in map px
   | { mode: 'move'; machineId: number; grab: Cell; moved?: boolean } // grab = cursor offset from origin
   | null;
@@ -83,8 +83,16 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
 
   // each pipeline is a polyline; each of its cells draws with the combined
   // light of the fluid at that point (pipelines through the same cell just
-  // overdraw each other)
+  // overdraw each other). Ghost pipes are a faint dashed route.
   for (const pl of world.pipelines) {
+    if (pl.ghost) {
+      ctx.setLineDash([2.5, 3.5]);
+      for (const { cell: [x, y], inSide, outSide } of orientPath(pl.cells)) {
+        drawPumpArrow(x, y, inSide, outSide, '#b3ada2', 0);
+      }
+      ctx.setLineDash([]);
+      continue;
+    }
     const contents = sim.pipeFluids.get(pl.id);
     orientPath(pl.cells).forEach(({ cell: [x, y], inSide, outSide }, i) => {
       drawPumpBase(x, y);
@@ -109,6 +117,36 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
 
   const drawMachine = (pm: PlacedMachine, alpha = 1, invalid = false) => {
     const hidden = !view.godMode;
+    // ghost machines: an unbuilt dashed placeholder, honest in either view
+    // (the player laid it down, after all)
+    if (pm.machine.ghost) {
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#f3f1ea';
+      for (const [x, y] of pm.cells) ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+      ctx.strokeStyle = '#a9a294';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      for (const [x0, y0, x1, y1] of perimeterSegments(pm.cells, CELL)) {
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const cxs = pm.cells.map(([x]) => x * CELL + CELL / 2);
+      const cys = pm.cells.map(([, y]) => y * CELL + CELL / 2);
+      ctx.fillStyle = '#a9a294';
+      ctx.font = 'italic 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(
+        view.godMode ? `ghost ${pm.type.name}` : 'ghost',
+        cxs.reduce((a, b) => a + b, 0) / cxs.length,
+        cys.reduce((a, b) => a + b, 0) / cys.length,
+      );
+      ctx.globalAlpha = 1;
+      return;
+    }
     ctx.globalAlpha = alpha;
     // Springs/sinks are painted exactly like the fluid they produce/want;
     // other machines with a wavelength param wear a pale tint of that light.
@@ -190,6 +228,18 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
           ctx.fillText(rate.toFixed(2), ex + DX[ls] * 14, ey + DY[ls] * 14);
         }
       }
+    }
+
+    // progress bar (e.g. a fabricator's build) — visible even to the player
+    const prog = pm.type.progress?.(sim.machineStates.get(pm.machine.id) ?? {});
+    if (prog !== null && prog !== undefined) {
+      const bx0 = Math.min(...pm.cells.map(([x]) => x)) * CELL + 3;
+      const bx1 = (Math.max(...pm.cells.map(([x]) => x)) + 1) * CELL - 3;
+      const by = (Math.max(...pm.cells.map(([, y]) => y)) + 1) * CELL - 6;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+      ctx.fillRect(bx0, by, bx1 - bx0, 3);
+      ctx.fillStyle = prog >= 1 ? '#3fae4a' : '#e04b3a';
+      ctx.fillRect(bx0, by, (bx1 - bx0) * Math.max(0, Math.min(1, prog)), 3);
     }
 
     if (!hidden) {

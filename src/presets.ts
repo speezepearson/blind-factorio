@@ -1,3 +1,4 @@
+import { defaultBudget } from './machines';
 import { buildStarterWorld } from './starter';
 import type { Cell, ParamValue, World } from './types';
 
@@ -9,7 +10,8 @@ export interface Preset {
 
 function emptyWorld(w: number, h: number): World {
   return {
-    w, h, pipelines: [], junctions: [], machines: [], nextMachineId: 1, nextPipelineId: 1, nextJunctionId: 1,
+    w, h, pipelines: [], junctions: [], machines: [], budget: defaultBudget(),
+    nextMachineId: 1, nextPipelineId: 1, nextJunctionId: 1,
   };
 }
 
@@ -29,6 +31,12 @@ function buildLookalikeWorld(w: number, h: number): World {
   add('spring', [20, 70], { mixture: [{ wl: 650, rate: 1 }, { wl: 540, rate: 1 }] });
   add('sink', [135, 25], { colorA: 650, colorB: 540, mixB: 0.5, tol: 12 });
   add('sink', [135, 70], { colorA: 556, tol: 12 });
+  // a puzzle budget: plenty of pipe, a few analysis machines, no new
+  // springs/sinks — the lookalikes on the map are all you get
+  world.budget = {
+    pipe: 700,
+    machines: { spring: 0, reactor: 0, funnel: 2, blender: 1, filter: 2, buffer: 1, sink: 0, fabricator: 1 },
+  };
   return world;
 }
 

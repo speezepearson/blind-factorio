@@ -4,7 +4,7 @@ import {
 import type { PlacedMachine } from './geom';
 import { TYPE_BY_ID } from './machines';
 import { placeAll } from './sim';
-import type { Cell, Machine, ParamValue, World } from './types';
+import type { Cell, Machine, ParamValue, Pipeline, World } from './types';
 
 // A selected patch of the world: a bounding box, the set of fine cells
 // actually inside the selection, and the boundary polygon (for drawing).
@@ -183,8 +183,11 @@ export function captureRegion(world: World, region: Region): Clipboard {
 
 // Stamp the clipboard down: machines that would collide are skipped, and a
 // pipeline is skipped whole if any of its cells lands out of bounds or on a
-// machine.
-export function pasteClipboard(world: World, tl: Cell, clip: Clipboard): void {
+// machine. With useBudget (player mode), each placement spends the world's
+// budget; whatever can't be paid for still lands, but as a ghost. (Copying
+// always captures things as real — a copied ghost pastes as real if the
+// budget covers it by then.)
+export function pasteClipboard(world: World, tl: Cell, clip: Clipboard, useBudget: boolean): void {
   for (const m of clip.machines) {
     const machine: Machine = {
       id: world.nextMachineId,
@@ -193,9 +196,15 @@ export function pasteClipboard(world: World, tl: Cell, clip: Clipboard): void {
       rotation: m.rotation,
       params: m.params ? { ...m.params } : undefined,
     };
+    if (useBudget) {
+      if ((world.budget.machines[m.typeId] ?? 0) >= 1) world.budget.machines[m.typeId]! -= 1;
+      else machine.ghost = true;
+    }
     if (machinePlacementOk(world, placeMachine(machine, TYPE_BY_ID[m.typeId]))) {
       world.machines.push(machine);
       world.nextMachineId++;
+    } else if (useBudget && !machine.ghost) {
+      world.budget.machines[m.typeId] = (world.budget.machines[m.typeId] ?? 0) + 1; // didn't fit — refund
     }
   }
   const occupied = machineCellMap(placeAll(world));
@@ -212,6 +221,13 @@ export function pasteClipboard(world: World, tl: Cell, clip: Clipboard): void {
     const ok = cells.every(
       ([x, y]) => x >= 0 && y >= 0 && x < world.w && y < world.h && !occupied.has(cellKey(x, y)),
     );
-    if (ok && cells.length > 0) world.pipelines.push({ id: world.nextPipelineId++, cells });
+    if (ok && cells.length > 0) {
+      const pipeline: Pipeline = { id: world.nextPipelineId++, cells };
+      if (useBudget) {
+        if (world.budget.pipe >= cells.length) world.budget.pipe -= cells.length;
+        else pipeline.ghost = true; // whole pipelines only: no half-built paste
+      }
+      world.pipelines.push(pipeline);
+    }
   }
 }

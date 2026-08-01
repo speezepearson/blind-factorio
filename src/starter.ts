@@ -1,3 +1,4 @@
+import { defaultBudget } from './machines';
 import type { Cell, ParamValue, World } from './types';
 
 // Walk axis-aligned segments between waypoints, returning every cell passed.
@@ -19,7 +20,8 @@ function pathThrough(waypoints: Cell[]): Cell[] {
 // the resulting blend runs through a green-targeting filter that splits it.
 export function buildStarterWorld(w: number, h: number): World {
   const world: World = {
-    w, h, pipelines: [], junctions: [], machines: [], nextMachineId: 1, nextPipelineId: 1, nextJunctionId: 1,
+    w, h, pipelines: [], junctions: [], machines: [], budget: defaultBudget(),
+    nextMachineId: 1, nextPipelineId: 1, nextJunctionId: 1,
   };
   const add = (typeId: string, origin: Cell, params?: Record<string, ParamValue>) => {
     world.machines.push({ id: world.nextMachineId++, typeId, origin, rotation: 0, params });

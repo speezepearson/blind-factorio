@@ -1,7 +1,7 @@
 import { DX, DY, cellKey, opposite, orientPath, placeMachine } from './geom';
 import type { PlacedMachine } from './geom';
 import { TYPE_BY_ID } from './machines';
-import type { FluidMap, ParamValue, World } from './types';
+import type { Cell, FluidMap, Machine, ParamValue, Pipeline, World } from './types';
 
 const EPS = 1e-4;
 const RATE_CAP = 1000;
@@ -24,6 +24,43 @@ export const emptySim = (): SimState => ({
 export const placeAll = (world: World): PlacedMachine[] =>
   world.machines.map((m) => placeMachine(m, TYPE_BY_ID[m.typeId]));
 
+// Every machine port edge, keyed by "x,y,side" of the machine-side cell.
+export type PortMap = Map<string, { machineId: number; portId: string; kind: 'in' | 'out' }>;
+export const portEdgeKey = (x: number, y: number, s: number) => `${x},${y},${s}`;
+export function portMapOf(placed: PlacedMachine[]): PortMap {
+  const map: PortMap = new Map();
+  for (const pm of placed) {
+    for (const port of pm.ports) {
+      for (const [[x, y], s] of port.edges) {
+        map.set(portEdgeKey(x, y, s), { machineId: pm.machine.id, portId: port.def.id, kind: port.def.kind });
+      }
+    }
+  }
+  return map;
+}
+
+// The most recently drawn pipeline whose tail ends at `cell` unattached — no
+// junction under it, no machine in-port past it. Starting a pipe drag there
+// picks the pipeline back up and keeps extending it.
+export function danglingTailAt(world: World, cell: Cell): Pipeline | null {
+  const ports = portMapOf(placeAll(world).filter((pm) => !pm.machine.ghost));
+  const junctionCells = new Set(world.junctions.map((j) => cellKey(j.cell[0], j.cell[1])));
+  for (let i = world.pipelines.length - 1; i >= 0; i--) {
+    const pl = world.pipelines[i];
+    if (pl.ghost || pl.cells.length === 0) continue;
+    const last = pl.cells[pl.cells.length - 1];
+    if (last[0] !== cell[0] || last[1] !== cell[1]) continue;
+    if (pl.cells.length > 1 && junctionCells.has(cellKey(last[0], last[1]))) continue;
+    const o = orientPath(pl.cells)[pl.cells.length - 1];
+    const beyond = ports.get(
+      portEdgeKey(last[0] + DX[o.outSide], last[1] + DY[o.outSide], opposite(o.outSide)),
+    );
+    if (beyond?.kind === 'in') continue;
+    return pl;
+  }
+  return null;
+}
+
 function addFluids(into: FluidMap, from: FluidMap | undefined) {
   if (!from) return;
   for (const [wl, rate] of Object.entries(from)) {
@@ -38,19 +75,13 @@ function addFluids(into: FluidMap, from: FluidMap | undefined) {
 // out-port's freshly computed output, split evenly among the pipelines
 // drawing from that port.
 export function step(world: World, prev: SimState, dt = 0.11): SimState {
-  const placed = placeAll(world);
+  // ghosts (unfunded placeholders) take no part in the sim at all
+  const placed = placeAll(world).filter((pm) => !pm.machine.ghost);
+  const pipelines = world.pipelines.filter((pl) => !pl.ghost);
 
-  // every machine port edge, keyed by "x,y,side" of the machine-side cell
-  const edgeKey = (x: number, y: number, s: number) => `${x},${y},${s}`;
+  const edgeKey = portEdgeKey;
   const portKey = (machineId: number, portId: string) => `${machineId}:${portId}`;
-  const portAtEdge = new Map<string, { machineId: number; portId: string; kind: 'in' | 'out' }>();
-  for (const pm of placed) {
-    for (const port of pm.ports) {
-      for (const [[x, y], s] of port.edges) {
-        portAtEdge.set(edgeKey(x, y, s), { machineId: pm.machine.id, portId: port.def.id, kind: port.def.kind });
-      }
-    }
-  }
+  const portAtEdge = portMapOf(placed);
 
   const junctionAt = new Map<string, number>(); // cellKey -> junctionId
   for (const j of world.junctions) junctionAt.set(cellKey(j.cell[0], j.cell[1]), j.id);
@@ -64,7 +95,7 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
   const consumers = new Map<string, number>(); // source key -> #pipelines drawing
   const deliveries = new Map<string, FluidMap>(); // in-portKey -> summed arrivals
   const junctionFlows = new Map<number, FluidMap>(); // junctionId -> summed arrivals
-  for (const pl of world.pipelines) {
+  for (const pl of pipelines) {
     if (pl.cells.length === 0) continue;
     const oriented = orientPath(pl.cells);
     const first = oriented[0];
@@ -146,7 +177,7 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
 
   // advance every pipeline one cell
   const pipeFluids: SimState['pipeFluids'] = new Map();
-  for (const pl of world.pipelines) {
+  for (const pl of pipelines) {
     if (pl.cells.length === 0) continue;
     const prevArr = prev.pipeFluids.get(pl.id) ?? [];
     const arr: FluidMap[] = new Array(pl.cells.length);
@@ -168,5 +199,52 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
     pipeFluids.set(pl.id, arr);
   }
 
+  deployFabricators(world, placed, machineStates);
+
   return { pipeFluids, junctionFlows, machineIO, machineStates };
+}
+
+// A fabricator whose build is done spends the finished item on a ghost of
+// the matching kind, then starts over. Machine ghosts fill whole (nearest
+// first); pipe ghosts fill one cell at a time from their intake end,
+// extending an adjacent dangling real pipeline when there is one so a
+// part-built route grows as a single pipeline. With no ghost to fill, the
+// item stays queued (the fab holds `ready` until one appears).
+function deployFabricators(world: World, placed: PlacedMachine[], states: SimState['machineStates']) {
+  for (const pm of placed) {
+    if (pm.machine.typeId !== 'fabricator') continue;
+    const st = states.get(pm.machine.id) as
+      | { making?: string; progress?: number; ready?: boolean }
+      | undefined;
+    if (!st?.ready) continue;
+    if (deployOne(world, String(st.making ?? 'pipe'), pm.machine.origin)) {
+      st.ready = false;
+      st.progress = 0;
+    }
+  }
+}
+
+function deployOne(world: World, kind: string, near: Cell): boolean {
+  if (kind === 'pipe') {
+    const gp = world.pipelines.find((pl) => pl.ghost && pl.cells.length > 0);
+    if (!gp) return false;
+    const head = gp.cells[0];
+    gp.cells = gp.cells.slice(1);
+    if (gp.cells.length === 0) world.pipelines = world.pipelines.filter((pl) => pl.id !== gp.id);
+    for (let s = 0; s < 4; s++) {
+      const pl = danglingTailAt(world, [head[0] + DX[s], head[1] + DY[s]]);
+      if (pl) {
+        pl.cells = [...pl.cells, head];
+        return true;
+      }
+    }
+    world.pipelines.push({ id: world.nextPipelineId++, cells: [head] });
+    return true;
+  }
+  const ghosts = world.machines.filter((m) => m.ghost && m.typeId === kind);
+  if (ghosts.length === 0) return false;
+  const dist = (m: Machine) => Math.abs(m.origin[0] - near[0]) + Math.abs(m.origin[1] - near[1]);
+  ghosts.sort((a, b) => dist(a) - dist(b));
+  delete ghosts[0].ghost;
+  return true;
 }

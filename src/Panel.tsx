@@ -1,5 +1,5 @@
 import { SIDE_NAMES, parseKey, pipelinesAt, placeMachine } from './geom';
-import { TYPE_BY_ID } from './machines';
+import { MACHINE_TYPES, TYPE_BY_ID } from './machines';
 import { WL_MAX, WL_MIN, wavelengthColor, wavelengthName } from './light';
 import type { SimState } from './sim';
 import type { Clipboard } from './clipboard';
@@ -37,9 +37,56 @@ interface PanelProps {
   clipboard: Clipboard | null;
   copySize: number;
   onParamChange: (machine: Machine, pd: ParamDef, value: ParamValue) => void;
+  onBudgetChange: (typeId: string | null, value: number) => void; // null = pipe stock
 }
 
-export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard, copySize, onParamChange }: PanelProps) {
+// The player's remaining stock of parts. Read-only tally in player mode; in
+// god mode, editable — the designer decides what the player gets.
+function BudgetBlock({ world, godMode, onBudgetChange }: Pick<PanelProps, 'world' | 'godMode' | 'onBudgetChange'>) {
+  const b = world.budget;
+  if (!godMode) {
+    const parts = MACHINE_TYPES.filter((t) => (b.machines[t.id] ?? 0) > 0);
+    return (
+      <p className="budget">
+        <b>Budget:</b> pipe ×{Math.max(0, Math.floor(b.pipe))}
+        {parts.map((t) => (
+          <span key={t.id}>
+            {' · '}{t.name} ×{b.machines[t.id]}
+          </span>
+        ))}
+      </p>
+    );
+  }
+  const field = (label: string, typeId: string | null, value: number) => (
+    <label key={typeId ?? 'pipe'}>
+      {label}
+      <input
+        type="number"
+        min={0}
+        value={Math.max(0, Math.floor(value))}
+        onChange={(e) => onBudgetChange(typeId, e.target.valueAsNumber)}
+      />
+    </label>
+  );
+  return (
+    <div className="budget">
+      <b>Player budget:</b>{' '}
+      {field('pipe', null, b.pipe)}
+      {MACHINE_TYPES.map((t) => field(t.name, t.id, b.machines[t.id] ?? 0))}
+    </div>
+  );
+}
+
+export function Panel(props: PanelProps) {
+  return (
+    <>
+      <BudgetBlock world={props.world} godMode={props.godMode} onBudgetChange={props.onBudgetChange} />
+      <PanelBody {...props} />
+    </>
+  );
+}
+
+function PanelBody({ world, sim, tool, hover, selectedId, godMode, clipboard, copySize, onParamChange }: PanelProps) {
   if (tool.kind === 'edit') {
     const machine = world.machines.find((m) => m.id === selectedId);
     if (!machine) {
@@ -103,6 +150,20 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
                 </div>
               );
             }
+            if (pd.kind === 'choice') {
+              return (
+                <label key={pd.key} className="param">
+                  {pd.label}:{' '}
+                  <select value={String(value)} onChange={(e) => set(e.target.value)}>
+                    {pd.options?.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              );
+            }
             return (
               <label key={pd.key} className="param">
                 {pd.label}: <b>{String(value)}</b>
@@ -127,6 +188,17 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
   if (hover?.kind === 'machine') {
     const machine = world.machines.find((m) => m.id === hover.machineId);
     if (!machine) return null;
+    if (machine.ghost) {
+      return (
+        <>
+          <h2>{godMode ? `Ghost ${TYPE_BY_ID[machine.typeId].name}` : 'Ghost machine'}</h2>
+          <p className="rule dim">
+            An unbuilt placeholder — it does nothing until a fabricator making this kind of
+            machine supplies the parts.
+          </p>
+        </>
+      );
+    }
     if (!godMode) {
       return (
         <>
@@ -176,10 +248,12 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
     if (!junction) return null;
     const [jx, jy] = junction.cell;
     const inflows = world.pipelines.filter(
-      (pl) => pl.cells.length > 1 && pl.cells[pl.cells.length - 1][0] === jx && pl.cells[pl.cells.length - 1][1] === jy,
+      (pl) =>
+        !pl.ghost && pl.cells.length > 1 &&
+        pl.cells[pl.cells.length - 1][0] === jx && pl.cells[pl.cells.length - 1][1] === jy,
     ).length;
     const outflows = world.pipelines.filter(
-      (pl) => pl.cells[0][0] === jx && pl.cells[0][1] === jy,
+      (pl) => !pl.ghost && pl.cells[0][0] === jx && pl.cells[0][1] === jy,
     ).length;
     return (
       <>
@@ -196,12 +270,17 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
     const pls = pipelinesAt(world.pipelines, cell);
     if (pls.length === 0) return null;
     // the player sees that there's a pipe, but not what's in it or which way
-    // it flows — they have to read the light
+    // it flows — they have to read the light. Ghosts are honestly ghosts.
     if (!godMode) {
+      const allGhost = pls.every((pl) => pl.ghost);
       return (
         <>
-          <h2>Pipe</h2>
-          <p className="rule dim">This pipe keeps its secrets.</p>
+          <h2>{allGhost ? 'Ghost pipe' : 'Pipe'}</h2>
+          <p className="rule dim">
+            {allGhost
+              ? 'An unbuilt route — a fabricator making pipe will build it in, cell by cell.'
+              : 'This pipe keeps its secrets.'}
+          </p>
         </>
       );
     }
@@ -210,6 +289,15 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
         <h2>{pls.length > 1 ? 'Crossing pipelines' : 'Pipeline'}</h2>
         {pls.map((pl) => {
           const idx = pl.cells.findIndex(([x, y]) => x === cell[0] && y === cell[1]);
+          if (pl.ghost) {
+            return (
+              <div key={pl.id}>
+                <p className="rule">
+                  Pipeline #{pl.id} (ghost): {pl.cells.length} unbuilt cells.
+                </p>
+              </div>
+            );
+          }
           return (
             <div key={pl.id}>
               <p className="rule">
@@ -234,6 +322,7 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
             </li>
             <li>Click to paste (as often as you like). Press <b>R</b> to rotate the clipboard.</li>
             <li>Machines and pipes that don't fit are skipped.</li>
+            <li>Anything beyond your budget lands as a <b>ghost</b> — a fabricator can build it in later.</li>
             <li>Press <b>Esc</b> to empty the clipboard and copy something else.</li>
           </ul>
         ) : (
@@ -250,7 +339,8 @@ export function Panel({ world, sim, tool, hover, selectedId, godMode, clipboard,
     <>
       <h2>Sandbox</h2>
       <ul className="help">
-        <li><b>Pipes:</b> click-drag to lay a pipeline from one machine to another — you can start the drag on a machine. Drag backwards to undo. Pipes can cross freely without connecting.</li>
+        <li><b>Pipes:</b> click-drag to lay a pipeline from one machine to another — you can start the drag on a machine. Drag backwards to undo. Pipes can cross freely without connecting. Start a drag on a pipe's loose end to keep extending it.</li>
+        <li><b>Budget:</b> building spends your stock of pipe and machines; erasing refunds it. What you can't afford appears as a dashed ghost — feed a <b>fabricator</b> red light and it builds ghosts in for real.</li>
         <li><b>Merging:</b> release a pipe drag <i>on</i> an existing pipe to splice in a junction — the flows sum downstream. Start a drag on a junction to tap it. Erasing any segment removes that whole stretch of pipe, junction to junction.</li>
         <li><b>Copy/paste:</b> lasso (or click a square around) a patch of factory to stamp out elsewhere, machines included.</li>
         <li><b>Erase:</b> lasso (or click a square around) a region to wipe — pumps inside it are removed, and machines overlapping it even partially are removed whole.</li>

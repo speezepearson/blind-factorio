@@ -27,17 +27,19 @@ export interface MixtureComponent {
 
 // A tunable per-machine-instance parameter: a plain number, a fluid
 // wavelength (kind 'wavelength', 400-800 nm, shown as a slider with a live
-// color swatch), or an arbitrary list of mixture components (kind 'mixture').
+// color swatch), an arbitrary list of mixture components (kind 'mixture'),
+// or one of a fixed set of choices (kind 'choice', shown as a dropdown).
 export type ParamValue = number | string | MixtureComponent[];
 
 export interface ParamDef {
   key: string;
   label: string;
-  kind: 'number' | 'wavelength' | 'mixture';
+  kind: 'number' | 'wavelength' | 'mixture' | 'choice';
   default: ParamValue;
   min?: number;
   max?: number;
   step?: number;
+  options?: Array<{ value: string; label: string }>; // for kind 'choice'
 }
 
 // Passed to compute() each tick: elapsed sim time and a persistent, mutable
@@ -70,6 +72,9 @@ export interface MachineType {
   // optional halo color while the machine is in a special state (e.g. a
   // satisfied sink); null = no glow. Visible even in the player view.
   glow?: (state: Record<string, unknown>) => string | null;
+  // optional 0..1 progress bar drawn on the body (e.g. a fabricator's build
+  // progress); null = no bar. Deliberately visible even in the player view.
+  progress?: (state: Record<string, unknown>) => number | null;
 }
 
 export interface Machine {
@@ -78,6 +83,9 @@ export interface Machine {
   origin: Cell; // top-left of the rotated footprint's bounding box
   rotation: number; // quarter-turns clockwise, 0..3
   params?: Record<string, ParamValue>; // overrides of the type's param defaults
+  // A ghost is a placeholder the player couldn't afford: it reserves its
+  // footprint but does nothing in the sim (no ports, no compute).
+  ghost?: boolean;
 }
 
 // A stretch of pipe: an ordered path of cells along which fluid flows, one
@@ -91,6 +99,9 @@ export interface Machine {
 export interface Pipeline {
   id: number;
   cells: Cell[];
+  // Ghost pipe: laid out but unbuilt (the player ran out of pipe budget).
+  // Carries nothing and never attaches; just reserves the route.
+  ghost?: boolean;
 }
 
 // A merge/split node created by ending (or starting) a pipe drag on an
@@ -101,12 +112,22 @@ export interface Junction {
   cell: Cell;
 }
 
+// The player's stock of parts: total pipe length (in cells) and a count of
+// each machine type. Building in player mode spends it, erasing refunds it;
+// anything the player can't afford goes down as a ghost. God mode ignores
+// the budget entirely (and can edit it).
+export interface Budget {
+  pipe: number;
+  machines: Record<string, number>; // typeId -> count
+}
+
 export interface World {
   w: number;
   h: number;
   pipelines: Pipeline[];
   junctions: Junction[];
   machines: Machine[];
+  budget: Budget;
   nextMachineId: number;
   nextPipelineId: number;
   nextJunctionId: number;

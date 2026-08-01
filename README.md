@@ -31,8 +31,9 @@ npm run lint    # oxlint
   drag *on* an existing pipe splices in a junction (the trunk becomes two pipelines);
   a junction sums its inflows and splits the total evenly among its outflows, so
   merged pipes carry the sum (and visibly fatten — width ∝ √rate). Starting a drag on
-  a junction taps out of it. Erasing any cell of a pipeline removes that whole
-  stretch, endpoint to endpoint.
+  a junction taps out of it; starting one on a pipeline's *dangling tail* picks that
+  pipeline back up and extends it (same id, in-flight fluid kept). Erasing any cell of
+  a pipeline removes that whole stretch, endpoint to endpoint.
 - Machines have ports (contiguous runs of perimeter edges) and a `compute` function from
   per-port inputs to per-port outputs. Fluids are identified by **light wavelength**
   (400–800 nm), and every stream — in a pipe or at a port — is a whole **mixture**
@@ -50,18 +51,32 @@ npm run lint    # oxlint
   did), filter (band-pass: in-band components out one port, the rest out the other;
   cannot split a homogenized fluid), buffer (stateful: fills to capacity, then drains
   its stored mixture proportionally), sink (slurps everything, glows while the incoming
-  wavelength composition matches its target mixture).
+  wavelength composition matches its target mixture), fabricator (fed ≥5 L/s of red
+  650 nm light — off-red counts at a discount, far-from-red counts *against* — it
+  builds its configured product on a per-kind timer and fills in ghosts; its progress
+  bar is visible even to the player).
+- **Budget & ghosts**: the world carries a player budget (`World.budget`) — total pipe
+  cells plus a count per machine type. Player-mode building spends it and player-mode
+  erasing refunds it; god mode ignores it and edits it (panel inputs). Anything the
+  player can't afford still lands, but as a dashed **ghost** (`ghost: true` on
+  Machine/Pipeline): inert in the sim, invisible to attachment, yet still reserving its
+  cells. A fabricator making the matching kind fills ghost machines whole
+  (nearest-first) and ghost pipes cell-by-cell from the intake end — each built cell
+  extends an adjacent dangling real pipeline when there is one, so a part-built route
+  grows as a single pipeline. Copying captures ghosts as real blueprint entries; paste
+  decides real-vs-ghost by the budget at paste time.
 - The sim ticks synchronously every 110 ms (`TICK_MS`); each pipeline's contents shift
   one cell toward its far end per tick — the head refills from its source (a port's
   fresh output or a junction's summed inflow, split evenly among consumers), the tail
-  delivers last tick's arrival to its destination port or junction. `step()` is a pure
-  function `(world, prevSim, dt) -> nextSim`.
+  delivers last tick's arrival to its destination port or junction. `step()` is
+  `(world, prevSim, dt) -> nextSim` — pure *except* that ready fabricators fill ghosts
+  at the end of the tick (`deployFabricators`), the one place the sim mutates the world.
 
 ## Module map
 
 | File | Job |
 |---|---|
-| `src/types.ts` | Core data types: World, Machine, MachineType, ports, params, Pipeline. |
+| `src/types.ts` | Core data types: World (incl. Budget), Machine, MachineType, ports, params, Pipeline. |
 | `src/geom.ts` | Grid constants (`GRID_W`/`GRID_H`/`CELL`) and geometry: sides, rotation, machine placement, pipeline path orientation and cell lookups. |
 | `src/light.ts` | Wavelength → sRGB color science: CIE observer fit, spectral-mixture rendering, gamut mapping, wavelength band names. |
 | `src/machines.ts` | The machine-type catalog + wavelength math. **To add a machine type, append one object here** — shape (coarse cells via `scaleCells`), ports, editable params, `compute`, optional `describeState`. Everything else (placement, rendering, editing, serialization) picks it up automatically. |
@@ -100,7 +115,8 @@ Two views of the same world:
 
 ## Sharing
 
-Export/Share serialize the world *structure* (machines + params + pipelines). Sim fluid and
+Export/Share serialize the world *structure* (machines + params + pipelines + junctions +
+budget + ghost flags; doc `v: 3` — older codes load with a roomy default budget). Sim fluid and
 machine internal state (e.g. a buffer's contents) are intentionally not serialized —
 import re-runs 400 warm-up ticks (`prewarm`) instead. View config (god mode) is also
 deliberately not part of world codes. World codes decode from either
