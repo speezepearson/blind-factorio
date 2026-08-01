@@ -1,8 +1,8 @@
 import {
-  CELL, DX, DY, GRID_H, GRID_W, cellKey, machineCellMap, orientPath, parseKey, perimeterSegments, placeMachine,
+  CELL, DX, DY, cellKey, machineCellMap, orientPath, parseKey, perimeterSegments, placeMachine,
 } from './geom';
 import type { PlacedMachine } from './geom';
-import { SCALE, TYPE_BY_ID, paleTint, totalRate } from './machines';
+import { TYPE_BY_ID, paleTint, totalRate } from './machines';
 import { mixtureColor, wavelengthColor } from './light';
 import { placeAll, pumpKey } from './sim';
 import type { SimState } from './sim';
@@ -48,27 +48,8 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
   const occupied = machineCellMap(placed);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#000';
+  ctx.fillStyle = '#fbfaf7';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // players get no grid at all; god mode gets the fine grid plus an accent
-  // line every SCALE cells (the machine-authoring pitch)
-  if (view.godMode) {
-    const strides: Array<[string, number]> = [['#17171b', 1], ['#26262d', SCALE]];
-    for (const [style, stride] of strides) {
-      ctx.strokeStyle = style;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (let x = 0; x <= GRID_W; x += stride) {
-        ctx.moveTo(x * CELL + 0.5, 0);
-        ctx.lineTo(x * CELL + 0.5, GRID_H * CELL);
-      }
-      for (let y = 0; y <= GRID_H; y += stride) {
-        ctx.moveTo(0, y * CELL + 0.5);
-        ctx.lineTo(GRID_W * CELL, y * CELL + 0.5);
-      }
-      ctx.stroke();
-    }
-  }
 
   const edgeMid = (x: number, y: number, s: Side): [number, number] => [
     x * CELL + CELL / 2 + (DX[s] * CELL) / 2,
@@ -77,21 +58,21 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
 
   const drawPumpBase = (x: number, y: number, alpha = 1) => {
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.04)';
     ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
     ctx.globalAlpha = 1;
   };
 
   const drawPumpArrow = (x: number, y: number, inSide: Side, outSide: Side, fluidColor: string | null, rate: number, alpha = 1) => {
     ctx.globalAlpha = alpha;
-    // empty pipes: narrow faint white lines on the black world
-    const color = fluidColor ?? '#6b6e76';
+    // empty pipes: narrow faint lines; carrying pipes: the fluid's light
+    // (black, if it's all invisible infrared), width ~ sqrt(rate)
+    const color = fluidColor ?? '#c6c9ce';
     const [ix, iy] = edgeMid(x, y, inSide);
     const [ox, oy] = edgeMid(x, y, outSide);
     const cx = x * CELL + CELL / 2;
     const cy = y * CELL + CELL / 2;
     ctx.strokeStyle = color;
-    // width goes as the square root of the flow rate
     ctx.lineWidth = fluidColor ? Math.min(CELL, Math.max(1.2, 1.6 * Math.sqrt(rate))) : 1;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -100,16 +81,6 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     ctx.lineTo(cx, cy);
     ctx.lineTo(ox, oy);
     ctx.stroke();
-    // arrowhead at the output edge
-    const adx = DX[outSide];
-    const ady = DY[outSide];
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(ox, oy);
-    ctx.lineTo(ox - adx * 3 - ady * 2, oy - ady * 3 + adx * 2);
-    ctx.lineTo(ox - adx * 3 + ady * 2, oy - ady * 3 - adx * 2);
-    ctx.closePath();
-    ctx.fill();
     ctx.globalAlpha = 1;
   };
 
@@ -140,7 +111,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
       : colorDef
         ? paleTint(wavelengthColor(Number(params[colorDef.key])))
         : pm.type.bodyColor;
-    ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#26262b' : body;
+    ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#dcd8cf' : body;
     // label ink that stays readable on saturated/dark fluid colors
     const [br, bg, bb] = [1, 3, 5].map((i) => parseInt(body.slice(i, i + 2), 16));
     const ink = hidden || 0.2126 * br + 0.7152 * bg + 0.0722 * bb > 120 ? '#2b2823' : '#f6f3ec';
@@ -162,7 +133,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
       ctx.restore();
     }
     // outline the perimeter
-    ctx.strokeStyle = '#8d8a84';
+    ctx.strokeStyle = '#4a4640';
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (const [x0, y0, x1, y1] of perimeterSegments(pm.cells, CELL)) {
@@ -175,7 +146,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     // become an anonymous thicker border; otherwise colored by kind.
     const io = sim.machineIO.get(pm.machine.id);
     for (const port of pm.ports) {
-      ctx.strokeStyle = hidden ? '#8d8a84' : port.def.kind === 'in' ? '#2f7fd1' : '#e08a1e';
+      ctx.strokeStyle = hidden ? '#4a4640' : port.def.kind === 'in' ? '#2f7fd1' : '#e08a1e';
       ctx.lineWidth = 4;
       ctx.lineCap = 'butt';
       const inset = 2;
@@ -273,19 +244,19 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
 
   // hover highlight — god only, same reasoning as the pipe drag preview
   if (view.godMode && hc && t.kind === 'pipe') {
-    ctx.strokeStyle = 'rgba(230,230,230,0.5)';
+    ctx.strokeStyle = 'rgba(60,60,60,0.5)';
     ctx.lineWidth = 1.5;
     ctx.strokeRect(hc[0] * CELL + 1, hc[1] * CELL + 1, CELL - 2, CELL - 2);
   }
 }
 
-// [fill, stroke] for a selection: erase red, paste blue, fresh copy pale
+// [fill, stroke] for a selection: erase red, paste blue, fresh copy grey
 const selectionColors = (tool: 'copy' | 'erase', clip: Clipboard | null): [string, string] =>
   tool === 'erase'
-    ? ['rgba(214, 60, 60, 0.18)', '#d63c3c']
+    ? ['rgba(214, 60, 60, 0.14)', '#d63c3c']
     : clip
-      ? ['rgba(47, 127, 209, 0.2)', '#2f7fd1']
-      : ['rgba(235, 232, 225, 0.14)', '#c9c5bc'];
+      ? ['rgba(47, 127, 209, 0.16)', '#2f7fd1']
+      : ['rgba(74, 70, 64, 0.13)', '#4a4640'];
 
 // The copy/paste/erase selection preview, drawn onto the *visible* canvas
 // every compositor frame (on top of the lake warp). Outside god mode the

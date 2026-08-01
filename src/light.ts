@@ -5,16 +5,16 @@
 // 1931 standard observer to get the one honest on-screen color. Consequences
 // we embrace: spectral colors overflow the sRGB gamut (we desaturate toward
 // white just enough to get back inside), and the eye's response dies off at
-// the 400/800 nm edges — near-infrared fluid is nearly invisible, fading to
-// the color of an unlit pipe.
+// the 400/800 nm edges — near-infrared fluid emits no visible light, so it
+// renders black.
 import type { FluidMap } from './types';
 
 export const WL_MIN = 400;
 export const WL_MAX = 800;
 
-// What fluid with no visible emission looks like: the same faint white as an
-// empty pipe on the black background — invisible fluid flows in disguise.
-const UNLIT = [107, 110, 118]; // #6b6e76
+// Fluid with no visible emission is the absence of light: black. Dim fluid
+// (near the 400/800 nm edges) fades toward black the same way.
+const UNLIT = [0, 0, 0];
 
 // Wyman–Sloan–Shirley piecewise-Gaussian fit of the CIE 1931 observer
 function lobe(x: number, mu: number, s1: number, s2: number): number {

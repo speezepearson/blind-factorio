@@ -31,7 +31,8 @@ npm run lint    # oxlint
   of its combined light: the fluid is a cloud of tiny equal-power monochromatic
   emitters, folded through the CIE observer (`light.ts`), so pure 556 nm and
   650 nm + 540 nm flowing together are visually indistinguishable but mechanically
-  different — and near-infrared fluid is almost invisible. A port's output is split
+  different — and near-infrared fluid emits no visible light, so it flows jet black.
+  A port's output is split
   evenly among the pumps drawing from it. Machine types: spring (emits a one- or
   two-wavelength mixture from its whole perimeter), reactor (conditional rule with
   wavelength tolerances, emits its output wavelength), funnel (merges streams, passes
