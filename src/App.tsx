@@ -203,7 +203,14 @@ export default function App() {
         const upstream = trunk.cells.slice(0, idx + 1);
         const downstream = trunk.cells.slice(idx);
         if (upstream.length > 1) world.pipelines.push({ id: trunk.id, cells: upstream });
-        if (downstream.length > 1) world.pipelines.push({ id: world.nextPipelineId++, cells: downstream });
+        if (downstream.length > 1) {
+          const id = world.nextPipelineId++;
+          world.pipelines.push({ id, cells: downstream });
+          // the downstream half inherits the trunk's in-flight fluid (the
+          // upstream half keeps it automatically, since it keeps the id)
+          const fluids = simRef.current.pipeFluids.get(trunk.id);
+          if (fluids) simRef.current.pipeFluids.set(id, fluids.slice(idx));
+        }
       }
     }
     world.pipelines.push({ id: world.nextPipelineId++, cells });
