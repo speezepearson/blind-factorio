@@ -90,12 +90,13 @@ export interface Machine {
 
 // A stretch of pipe: an ordered path of cells along which fluid flows, one
 // cell per tick, from cells[0] to the far end. Endpoints attach
-// positionally: the cell just before cells[0] may be a machine out-port edge
-// (its source) and the cell just past the last an in-port edge (its
-// destination); alternatively, a head or tail cell sitting ON a junction
-// attaches to that junction. So pipelines are directed edges in a graph
-// whose nodes are machines and junctions. Any number of pipelines may pass
-// through the same cell; only endpoints ever connect.
+// positionally, by touch: an out-port edge on any side of the head cell is
+// its source and an in-port edge on any side of the tail cell its
+// destination (the straight-through side wins if several qualify);
+// alternatively, a head or tail cell sitting ON a junction attaches to that
+// junction. So pipelines are directed edges in a graph whose nodes are
+// machines and junctions. Any number of pipelines may pass through the same
+// cell; only endpoints ever connect.
 export interface Pipeline {
   id: number;
   cells: Cell[];

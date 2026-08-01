@@ -25,8 +25,9 @@ npm run lint    # oxlint
   5× grid (`SCALE` in `machines.ts`), so a "2×2" machine really occupies 10×10 fine cells.
 - Fluid travels in **pipelines**: directed stretches of pipe (an ordered path of cells)
   running through open space. Pipelines are edges in a graph whose nodes are machines
-  and **junctions** — each attaches (positionally) to an out-port or junction at its
-  intake and an in-port or junction at its outflow. Any number of pipelines may pass
+  and **junctions** — each attaches (positionally, by touch: a port edge on *any* side
+  of the endpoint cell counts, straight-through side preferred) to an out-port or
+  junction at its intake and an in-port or junction at its outflow. Any number of pipelines may pass
   through the same cell without interacting: crossing never connects. Releasing a pipe
   drag *on* an existing pipe splices in a junction (the trunk becomes two pipelines);
   a junction sums its inflows and splits the total evenly among its outflows, so

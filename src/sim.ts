@@ -1,7 +1,7 @@
 import { DX, DY, cellKey, opposite, orientPath, placeMachine } from './geom';
 import type { PlacedMachine } from './geom';
 import { TYPE_BY_ID } from './machines';
-import type { Cell, FluidMap, Machine, ParamValue, Pipeline, World } from './types';
+import type { Cell, FluidMap, Machine, ParamValue, Pipeline, Side, World } from './types';
 
 const EPS = 1e-4;
 const RATE_CAP = 1000;
@@ -39,9 +39,23 @@ export function portMapOf(placed: PlacedMachine[]): PortMap {
   return map;
 }
 
+// A machine port of the wanted kind on any side of an endpoint cell,
+// checking the straight-through side first. Endpoints attach by touch, not
+// just by flow direction — a pipe that leaves a spring running alongside it
+// still connects.
+function portBeside(
+  ports: PortMap, [x, y]: Cell, prefer: Side, kind: 'in' | 'out',
+): { machineId: number; portId: string; kind: 'in' | 'out' } | undefined {
+  for (const s of [prefer, 0, 1, 2, 3] as Side[]) {
+    const p = ports.get(portEdgeKey(x + DX[s], y + DY[s], opposite(s)));
+    if (p?.kind === kind) return p;
+  }
+  return undefined;
+}
+
 // The most recently drawn pipeline whose tail ends at `cell` unattached — no
-// junction under it, no machine in-port past it. Starting a pipe drag there
-// picks the pipeline back up and keeps extending it.
+// junction under it, no machine in-port beside it. Starting a pipe drag
+// there picks the pipeline back up and keeps extending it.
 export function danglingTailAt(world: World, cell: Cell): Pipeline | null {
   const ports = portMapOf(placeAll(world).filter((pm) => !pm.machine.ghost));
   const junctionCells = new Set(world.junctions.map((j) => cellKey(j.cell[0], j.cell[1])));
@@ -52,10 +66,7 @@ export function danglingTailAt(world: World, cell: Cell): Pipeline | null {
     if (last[0] !== cell[0] || last[1] !== cell[1]) continue;
     if (pl.cells.length > 1 && junctionCells.has(cellKey(last[0], last[1]))) continue;
     const o = orientPath(pl.cells)[pl.cells.length - 1];
-    const beyond = ports.get(
-      portEdgeKey(last[0] + DX[o.outSide], last[1] + DY[o.outSide], opposite(o.outSide)),
-    );
-    if (beyond?.kind === 'in') continue;
+    if (portBeside(ports, last, o.outSide, 'in')) continue;
     return pl;
   }
   return null;
@@ -79,7 +90,6 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
   const placed = placeAll(world).filter((pm) => !pm.machine.ghost);
   const pipelines = world.pipelines.filter((pl) => !pl.ghost);
 
-  const edgeKey = portEdgeKey;
   const portKey = (machineId: number, portId: string) => `${machineId}:${portId}`;
   const portAtEdge = portMapOf(placed);
 
@@ -107,10 +117,8 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
       srcOf.set(pl.id, key);
       consumers.set(key, (consumers.get(key) ?? 0) + 1);
     } else {
-      const src = portAtEdge.get(
-        edgeKey(first.cell[0] + DX[first.inSide], first.cell[1] + DY[first.inSide], opposite(first.inSide)),
-      );
-      if (src?.kind === 'out') {
+      const src = portBeside(portAtEdge, first.cell, first.inSide, 'out');
+      if (src) {
         const key = `p:${portKey(src.machineId, src.portId)}`;
         srcOf.set(pl.id, key);
         consumers.set(key, (consumers.get(key) ?? 0) + 1);
@@ -126,10 +134,8 @@ export function step(world: World, prev: SimState, dt = 0.11): SimState {
       addFluids(into, arriving);
       junctionFlows.set(tailJunction, into);
     } else {
-      const dst = portAtEdge.get(
-        edgeKey(last.cell[0] + DX[last.outSide], last.cell[1] + DY[last.outSide], opposite(last.outSide)),
-      );
-      if (dst?.kind === 'in' && arriving) {
+      const dst = portBeside(portAtEdge, last.cell, last.outSide, 'in');
+      if (dst && arriving) {
         const key = portKey(dst.machineId, dst.portId);
         const into = deliveries.get(key) ?? {};
         addFluids(into, arriving);
