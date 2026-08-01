@@ -48,12 +48,12 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
   const occupied = machineCellMap(placed);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#fbfaf7';
+  ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   // players get no grid at all; god mode gets the fine grid plus an accent
   // line every SCALE cells (the machine-authoring pitch)
   if (view.godMode) {
-    const strides: Array<[string, number]> = [['#f3f1ea', 1], ['#e0dcd2', SCALE]];
+    const strides: Array<[string, number]> = [['#17171b', 1], ['#26262d', SCALE]];
     for (const [style, stride] of strides) {
       ctx.strokeStyle = style;
       ctx.lineWidth = 1;
@@ -77,21 +77,22 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
 
   const drawPumpBase = (x: number, y: number, alpha = 1) => {
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = '#e7e9ec';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
     ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
     ctx.globalAlpha = 1;
   };
 
   const drawPumpArrow = (x: number, y: number, inSide: Side, outSide: Side, fluidColor: string | null, rate: number, alpha = 1) => {
     ctx.globalAlpha = alpha;
-    const color = fluidColor ?? '#b3b8c0';
+    // empty pipes: narrow faint white lines on the black world
+    const color = fluidColor ?? '#6b6e76';
     const [ix, iy] = edgeMid(x, y, inSide);
     const [ox, oy] = edgeMid(x, y, outSide);
     const cx = x * CELL + CELL / 2;
     const cy = y * CELL + CELL / 2;
     ctx.strokeStyle = color;
     // width goes as the square root of the flow rate
-    ctx.lineWidth = fluidColor ? Math.min(CELL, Math.max(1.2, 1.6 * Math.sqrt(rate))) : 1.5;
+    ctx.lineWidth = fluidColor ? Math.min(CELL, Math.max(1.2, 1.6 * Math.sqrt(rate))) : 1;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
@@ -139,7 +140,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
       : colorDef
         ? paleTint(wavelengthColor(Number(params[colorDef.key])))
         : pm.type.bodyColor;
-    ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#dcd8cf' : body;
+    ctx.fillStyle = invalid ? '#e8a0a0' : hidden ? '#26262b' : body;
     // label ink that stays readable on saturated/dark fluid colors
     const [br, bg, bb] = [1, 3, 5].map((i) => parseInt(body.slice(i, i + 2), 16));
     const ink = hidden || 0.2126 * br + 0.7152 * bg + 0.0722 * bb > 120 ? '#2b2823' : '#f6f3ec';
@@ -161,7 +162,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
       ctx.restore();
     }
     // outline the perimeter
-    ctx.strokeStyle = '#4a4640';
+    ctx.strokeStyle = '#8d8a84';
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (const [x0, y0, x1, y1] of perimeterSegments(pm.cells, CELL)) {
@@ -174,7 +175,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     // become an anonymous thicker border; otherwise colored by kind.
     const io = sim.machineIO.get(pm.machine.id);
     for (const port of pm.ports) {
-      ctx.strokeStyle = hidden ? '#4a4640' : port.def.kind === 'in' ? '#2f7fd1' : '#e08a1e';
+      ctx.strokeStyle = hidden ? '#8d8a84' : port.def.kind === 'in' ? '#2f7fd1' : '#e08a1e';
       ctx.lineWidth = 4;
       ctx.lineCap = 'butt';
       const inset = 2;
@@ -272,19 +273,19 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
 
   // hover highlight — god only, same reasoning as the pipe drag preview
   if (view.godMode && hc && t.kind === 'pipe') {
-    ctx.strokeStyle = 'rgba(60,60,60,0.5)';
+    ctx.strokeStyle = 'rgba(230,230,230,0.5)';
     ctx.lineWidth = 1.5;
     ctx.strokeRect(hc[0] * CELL + 1, hc[1] * CELL + 1, CELL - 2, CELL - 2);
   }
 }
 
-// [fill, stroke] for a selection: erase red, paste blue, fresh copy grey
+// [fill, stroke] for a selection: erase red, paste blue, fresh copy pale
 const selectionColors = (tool: 'copy' | 'erase', clip: Clipboard | null): [string, string] =>
   tool === 'erase'
-    ? ['rgba(214, 60, 60, 0.14)', '#d63c3c']
+    ? ['rgba(214, 60, 60, 0.18)', '#d63c3c']
     : clip
-      ? ['rgba(47, 127, 209, 0.16)', '#2f7fd1']
-      : ['rgba(74, 70, 64, 0.13)', '#4a4640'];
+      ? ['rgba(47, 127, 209, 0.2)', '#2f7fd1']
+      : ['rgba(235, 232, 225, 0.14)', '#c9c5bc'];
 
 // The copy/paste/erase selection preview, drawn onto the *visible* canvas
 // every compositor frame (on top of the lake warp). Outside god mode the

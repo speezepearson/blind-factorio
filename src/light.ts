@@ -12,8 +12,9 @@ import type { FluidMap } from './types';
 export const WL_MIN = 400;
 export const WL_MAX = 800;
 
-// what fluid with no visible emission looks like: an unlit pipe
-const UNLIT = [179, 184, 192]; // #b3b8c0
+// What fluid with no visible emission looks like: the same faint white as an
+// empty pipe on the black background — invisible fluid flows in disguise.
+const UNLIT = [107, 110, 118]; // #6b6e76
 
 // Wyman–Sloan–Shirley piecewise-Gaussian fit of the CIE 1931 observer
 function lobe(x: number, mu: number, s1: number, s2: number): number {
