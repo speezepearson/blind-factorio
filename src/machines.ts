@@ -102,13 +102,31 @@ function springMixture(params: Record<string, ParamValue>): FluidMap {
   return out;
 }
 
-// the exact color of the two-wavelength mixture a machine produces/wants
-const twoWlColor = (params: Record<string, ParamValue>, fallbackWl: number): string =>
-  mixtureColor(targetMixture(
-    asWavelength(params.colorA ?? params.color, fallbackWl),
-    asWavelength(params.colorB, fallbackWl),
+// A sink's target as normalized shares (summing to 1): the 'mixture' param
+// is the same arbitrary {wl, rate} list a spring uses — only the *ratios*
+// matter to a sink. Old worlds may instead hold the legacy
+// colorA/colorB/mixB params — convert those on the fly.
+function sinkTarget(params: Record<string, ParamValue>): FluidMap {
+  if (Array.isArray(params.mixture)) {
+    const t: FluidMap = {};
+    let total = 0;
+    for (const c of params.mixture) {
+      const r = Number(c?.rate);
+      if (r > 1e-6) {
+        const wl = asWavelength(c?.wl, 580);
+        t[wl] = (t[wl] ?? 0) + r;
+        total += r;
+      }
+    }
+    for (const k of Object.keys(t)) t[k] /= total;
+    return t;
+  }
+  return targetMixture(
+    asWavelength(params.colorA ?? params.color, 580),
+    asWavelength(params.colorB, 580),
     clamp01(Number(params.mixB)),
-  ));
+  );
+}
 
 // ---- fabricator ------------------------------------------------------------
 
@@ -310,25 +328,21 @@ export const MACHINE_TYPES: MachineType[] = [
       { id: 'in', label: 'A', kind: 'in', edges: RING_2X2 },
     ],
     params: [
-      { key: 'colorA', label: 'Target wavelength A (nm)', kind: 'wavelength', default: 580, min: WL_MIN, max: WL_MAX, step: 1 },
-      { key: 'colorB', label: 'Target wavelength B (nm)', kind: 'wavelength', default: 580, min: WL_MIN, max: WL_MAX, step: 1 },
-      { key: 'mixB', label: 'Share of B', kind: 'number', default: 0, min: 0, max: 1, step: 0.05 },
+      { key: 'mixture', label: 'Target mixture (ratios matter, not rates)', kind: 'mixture', default: [{ wl: 580, rate: 1 }] },
       { key: 'tol', label: 'Tolerance (nm)', kind: 'number', default: 15, min: 0, max: 200, step: 1 },
     ],
     ruleText:
       'Slurps up everything fed into any side. Lights up while the incoming mixture ' +
-      'matches its target mixture (two wavelengths in configured shares): each target ' +
-      "component must make up its share of what's arriving, judged by wavelength within " +
-      'the tolerance — the right-looking light made of the wrong wavelengths stays ' +
-      'dark. Needs at least 0.5 L/s in total. Its body is painted exactly like the ' +
-      'mixture it wants.',
-    fluidColor: (params) => twoWlColor(params, 580),
+      'matches its target mixture (an arbitrary list of wavelengths, in the listed ' +
+      "proportions): each target component must make up its share of what's arriving, " +
+      'judged by wavelength within the tolerance — the right-looking light made of the ' +
+      'wrong wavelengths stays dark. Needs at least 0.5 L/s in total. Its body is ' +
+      'painted exactly like the mixture it wants.',
+    fluidColor: (params) => mixtureColor(sinkTarget(params)),
     compute: (inputs, params, ctx): Record<string, FluidMap> => {
       const fm = inputs.in ?? {};
       const total = totalRate(fm);
-      const target = targetMixture(
-        asWavelength(params.colorA, 580), asWavelength(params.colorB, 580), clamp01(Number(params.mixB)),
-      );
+      const target = sinkTarget(params);
       let score = 0;
       for (const [wl, share] of Object.entries(target)) {
         const got = total > 1e-4 ? rateNear(fm, Number(wl), Number(params.tol)) / total : 0;

@@ -29,8 +29,8 @@ function buildLookalikeWorld(w: number, h: number): World {
   };
   add('spring', [20, 25], { mixture: [{ wl: 556, rate: 2 }] });
   add('spring', [20, 70], { mixture: [{ wl: 650, rate: 1 }, { wl: 540, rate: 1 }] });
-  add('sink', [135, 25], { colorA: 650, colorB: 540, mixB: 0.5, tol: 12 });
-  add('sink', [135, 70], { colorA: 556, tol: 12 });
+  add('sink', [135, 25], { mixture: [{ wl: 650, rate: 1 }, { wl: 540, rate: 1 }], tol: 12 });
+  add('sink', [135, 70], { mixture: [{ wl: 556, rate: 1 }], tol: 12 });
   // a puzzle budget: plenty of pipe, a few analysis machines, no new
   // springs/sinks — the lookalikes on the map are all you get
   world.budget = {
