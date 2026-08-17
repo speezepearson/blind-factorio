@@ -1,7 +1,8 @@
 // Ghost veins: player-drawn veins start unreal and only grow in — at 1 cell
 // per 2 ticks — from points of contact with the live network. Unconnected
-// ghosts stay ghosts; a later connecting vein incarnates them; fluid never
-// outruns (or leaks out of) the incarnation front.
+// ghosts stay ghosts; a later connecting vein incarnates them. Fluid vents
+// at the incarnation frontier (a visible open end) but never occupies a
+// ghost cell.
 import { finish, launch, ok } from './helpers.mjs';
 
 const d = await launch();

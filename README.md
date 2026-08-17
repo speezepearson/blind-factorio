@@ -50,8 +50,10 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
   (∝ √throughput) is the amount channel, orthogonal to color's ratio channel.
 - **Heat moves**: along veins, between co-located veins (crossing veins exchange heat
   but not matter — counterflow heat exchangers are an *invention*), and leaks to
-  ambient. Fusion is self-limiting: released heat shifts the balance back until the
-  vein sheds it.
+  ambient. Heat capacity rides entirely on the fluid; vein walls are **thermally
+  invisible** (zero capacity, no hidden thermal state — an empty vein has no
+  temperature). Fusion is self-limiting: released heat shifts the balance back until
+  the vein sheds it.
 
 ## The world
 
@@ -66,17 +68,21 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
   fork/merge onto an incarnate cell, or a live vein's end junctioning onto them
   mid-route. Unconnected ghosts stay ghosts. Ghost cells carry no fluid, exchange no
   heat, and can't be budded on. Preset/imported "wild anatomy" is born incarnate.
-- **Nothing ever destroys fluid in transit.** A blocked outlet — a ghost cell ahead,
-  or a growing organ at the tail — *stalls* the column behind it (a traffic jam, not
-  a drain), so mass-balance reasoning always holds. See `using-my-initiative.md`.
-- **Organs** grow by *budding*: double-click a straight, incarnate 5-cell stretch;
-  the host vein is cut into a feeder and a continuation, and the organ swells over
-  GROW_TICKS (10) ticks — accepting and emitting nothing while it grows (the feeder
-  stalls, downstream drains). The stretch of host vein beneath it (the
-  "understretch") stays until growth completes, then is garbage-collected. One organ
-  exists so far — the **radical filter** (free radicals out the side port, composites
-  out the main port). Budding is hard-coded; the mixture-determined differentiation
-  grammar is the next design milestone.
+- **Infinite throughput; every sink is visible.** Everything advances one cell per
+  tick, nothing ever queues. Fluid that runs out of vein *vents* into the cavity —
+  at an open tail, at the frontier of a still-incarnating ghost, at a not-yet-built
+  merge junction, or into a growing organ's mouth (it's building itself with it).
+  Mass-balance inference stays honest because every vent is a structural feature the
+  player can point at; fluid never vanishes mid-vein.
+- **Organs** grow by *budding*: double-click a straight, incarnate 5-cell stretch
+  (not within 3 cells of an end); the host vein is cut into a feeder and a
+  continuation, and the organ swells over GROW_TICKS (10) ticks — swallowing its
+  feed and emitting nothing while it grows (downstream drains). The stretch of host
+  vein beneath it (the "understretch") stays until growth completes, then is
+  garbage-collected. One organ exists so far — the **radical filter** (free radicals
+  out the side port, composites out the main port); its name and side-port label
+  are god-only on the canvas. Budding is hard-coded; the mixture-determined
+  differentiation grammar is the next design milestone.
 - Erasing cells removes them from every vein passing through, splitting survivors into
   fragments (fluid rides along); organs touched by an erase die (an interrupted
   organ's understretch survives, re-exposed).

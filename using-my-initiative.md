@@ -5,14 +5,14 @@ and why. Newest at the bottom.
 
 ## Theming pass (flesh cavity, 2026-08-17)
 
-- **"Fluid stops flowing through that point" during organ budding → I made upstream
-  *stall*, not vent.** Destroying in-flight fluid would quietly break mass-balance
-  reasoning, which the design doc holds up as the one inference tool the player can
-  always trust ("radical counts are conserved... mass-balance experiments are always
-  valid"). So a growing organ, and likewise the not-yet-incarnate stretch of a ghost
-  vein, block like a clamped artery: the column behind them backs up and waits.
-  Downstream still empties exactly as you described. Same rule everywhere fluid could
-  have been lost — nothing ever silently vanishes.
+- ~~**"Fluid stops flowing through that point" during organ budding → I made upstream
+  *stall*, not vent.**~~ **Superseded 2026-08-17** by your call: veins have infinite
+  throughput and nothing ever stalls. Blocked outlets now *vent* — but every vent is
+  a structurally visible feature (an open tail, a ghost's unfinished frontier, a
+  growing organ's mouth), so the mass-balance concern that motivated stalling is
+  answered differently: fluid never vanishes anywhere the player can't point at. The
+  stall machinery turned out to be the root of the two worst review findings
+  (heat-conveyor merges, unbounded cram), which rather settles the argument.
 - **Background contrast kept deliberately low and slow, drips rare and faint.** Vein
   color and width *are* the game's data channels; a lively background competes with
   the signal. The cavity mottles, breathes, and occasionally drips, but everything

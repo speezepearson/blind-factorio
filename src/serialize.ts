@@ -105,13 +105,14 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
   if (doc.rv !== 1 || !Array.isArray(doc.veins)) throw new Error('not a recognized world document');
 
   const w = makeWorld(chem);
+  // stickiness is applied at the very end, after everything that can throw
+  // — a rejected code must not leave the live chemistry mutated
+  const stick: Record<string, number> = {};
   if (doc.stick && typeof doc.stick === 'object') {
-    const next: Record<string, number> = {};
     for (const r of chem.radicals) {
       const v = Number(doc.stick[r.id]);
-      if (Number.isFinite(v)) next[r.id] = Math.max(0, Math.min(6, v));
+      if (Number.isFinite(v)) stick[r.id] = Math.max(0, Math.min(6, v));
     }
-    chem.setStickiness(next);
   }
 
   // organs first (veins reference them); then veins with ids remapped from
@@ -175,5 +176,6 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
     }
   }
   reindex(w);
+  chem.setStickiness(stick);
   return w;
 }

@@ -220,26 +220,28 @@ function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein): void
     if ((i === 0 || !p.inc[i - 1]) && (i === n - 1 || !p.inc[i + 1])) strokeSeg(ctx, pts, i - 0.001, i + 0.001, lw, '#1b1214');
   }
 
-  // 3) fluid: each parcel drawn as a sliding one-cell segment — arrivals
-  // interpolate from the cell behind, stalled parcels sit still
+  // 3) fluid: each parcel drawn as a sliding one-cell segment, always
+  // interpolating from the cell behind (everything advances every tick)
   for (let i = 0; i < n; i++) {
     if (!p.inc[i]) continue;
     const color = fluidColor(chem, p.parcels[i].c);
     if (!color) continue;
-    const slide = p.arrived?.[i] ? frac - 1 : 0; // arrived: from i-1 (slide -1..0)
+    const slide = frac - 1; // moving from i-1 toward i over the tick
     const t0 = Math.max(0, i + slide - 0.5);
     const t1 = Math.min(n - 1, i + slide + 0.5);
     const wv = Math.max(1.2, widthOf(p.flow[i]) * wave(i, p.flow[i]));
     strokeSeg(ctx, pts, t0, t1, wv, color);
   }
 
-  // 4) drifting direction chevrons, riding the flow
+  // 4) drifting direction chevrons, riding the flow — only where there IS
+  // flow (a dry vein gives no direction hint until fluid moves through it)
   ctx.fillStyle = 'rgba(240,235,228,0.5)';
   const step = 4;
   for (let base = 1 + ((phase % step) + step) % step; base < n - 0.5; base += step) {
     const i = base;
     const lo = Math.floor(i);
     if (lo < 0 || lo + 1 >= n || !p.inc[lo] || !p.inc[lo + 1]) continue;
+    if (p.flow[lo] < SCALE * 0.01) continue;
     const [x0, y0] = posAt(pts, i - 0.45);
     const [x1, y1] = posAt(pts, i + 0.45);
     const dx = x1 - x0;
@@ -318,29 +320,36 @@ function drawOrgans(ctx: CanvasRenderingContext2D, view: ViewState): void {
     ctx.roundRect(x + 2, y + 2, wpx - 4, wpx - 4, 12);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = '#6a5f48';
-    ctx.font = '700 10px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('RADICAL', cx, o.cy * CELL + 2);
-    ctx.fillText('FILTER', cx, o.cy * CELL + 13);
+    // the organ's identity is god-only: the player was promised "what it
+    // does is yours to find out"
+    if (view.godMode) {
+      ctx.fillStyle = '#6a5f48';
+      ctx.font = '700 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('RADICAL', cx, o.cy * CELL + 2);
+      ctx.fillText('FILTER', cx, o.cy * CELL + 13);
+    }
     ctx.restore();
 
-    // ports sit on the grid, unscaled (veins attach to them)
-    const port = (pt: { x: number; y: number }, color: string, label: string) => {
+    // ports sit on the grid, unscaled (veins attach to them). in/out are
+    // honest anatomy; the side port's function stays unlabeled for players.
+    const port = (pt: { x: number; y: number }, color: string, label: string | null) => {
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.roundRect(pt.x * CELL + 3, pt.y * CELL + 3, CELL - 6, CELL - 6, 4);
       ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.font = '700 9px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(label, pt.x * CELL + CELL / 2, pt.y * CELL + CELL / 2 + 0.5);
+      if (label) {
+        ctx.fillStyle = '#fff';
+        ctx.font = '700 9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, pt.x * CELL + CELL / 2, pt.y * CELL + CELL / 2 + 0.5);
+      }
     };
     port(o.portIn, '#4a7a52', 'in');
     port(o.portOut, '#4a5f7a', 'out');
-    port(o.portSide, '#9a5f3a', 'rad');
+    port(o.portSide, '#9a5f3a', view.godMode ? 'rad' : null);
   }
 }
 

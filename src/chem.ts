@@ -13,7 +13,9 @@
 
 export const EPS = 0.01; // energy units per thermal quantum
 export const SCALE = 10000; // particles per "part" (source output per tick)
-export const CWALL = 400; // vein-wall heat capacity (energy per T unit)
+// Heat capacity rides entirely on the fluid (per radical). Vein walls are
+// thermally invisible — zero capacity, no hidden thermal state — so an
+// empty stretch of vein has no temperature at all (it reads as ambient).
 export const CR = 0.8; // heat capacity per radical
 export const T_AMB = 1.0; // ambient temperature
 export const K_ALONG = 0.25; // heat conduction along a vein, per tick
@@ -187,16 +189,20 @@ export function totalParticles(chem: Chemistry, c: Int32Array): number {
   for (let i = 0; i < chem.nsp; i++) n += c[i];
   return n;
 }
-export const capOf = (chem: Chemistry, c: Int32Array) => CR * radCount(chem, c) + CWALL;
-export const tempOf = (chem: Chemistry, p: Parcel) => (p.U * EPS) / capOf(chem, p.c);
+export const capOf = (chem: Chemistry, c: Int32Array) => CR * radCount(chem, c);
+// an empty parcel has zero heat capacity: it "reads" as ambient
+export const tempOf = (chem: Chemistry, p: Parcel) => {
+  const cap = capOf(chem, p.c);
+  return cap > 0 ? (p.U * EPS) / cap : T_AMB;
+};
 
 export function emptyParcel(chem: Chemistry): Parcel {
-  return { c: new Int32Array(chem.nsp), U: Math.round((CWALL * T_AMB) / EPS) };
+  return { c: new Int32Array(chem.nsp), U: 0 };
 }
 export function sourceParcel(chem: Chemistry, spIdx: number): Parcel {
   const c = new Int32Array(chem.nsp);
   c[spIdx] = SCALE;
-  return { c, U: Math.round(((CR * SCALE * chem.radcount[spIdx] + CWALL) * T_AMB) / EPS) };
+  return { c, U: Math.round((CR * SCALE * chem.radcount[spIdx] * T_AMB) / EPS) };
 }
 export function cloneParcel(p: Parcel): Parcel {
   return { c: new Int32Array(p.c), U: p.U };
@@ -305,6 +311,7 @@ export function reactParcel(chem: Chemistry, parcel: Parcel): void {
 export function exchangeHeat(chem: Chemistry, pa: Parcel, pb: Parcel, kappa: number): void {
   const Ca = capOf(chem, pa.c);
   const Cb = capOf(chem, pb.c);
+  if (Ca <= 0 || Cb <= 0) return; // nothing (or a bare wall) on one side
   const Ta = (pa.U * EPS) / Ca;
   const Tb = (pb.U * EPS) / Cb;
   const Cab = (Ca * Cb) / (Ca + Cb);
@@ -316,6 +323,10 @@ export function exchangeHeat(chem: Chemistry, pa: Parcel, pb: Parcel, kappa: num
 }
 export function ambientLeak(chem: Chemistry, p: Parcel): void {
   const C = capOf(chem, p.c);
+  if (C <= 0) {
+    p.U = 0; // any stray quanta on an empty parcel dissipate
+    return;
+  }
   const T = (p.U * EPS) / C;
   let q = stochRound((K_AMB * (T - T_AMB) * C) / EPS);
   if (q > 0) q = Math.min(q, p.U);

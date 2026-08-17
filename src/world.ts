@@ -62,9 +62,6 @@ export interface Vein {
   // no heat, and stall any column trying to advance into them.
   inc: number[]; // 1 = incarnate
   incTick: number[]; // world tick the cell incarnated (-1 = never), for smooth extrusion
-  // transient, per tick, not serialized/snapshotted: did cell i's parcel
-  // arrive this tick (vs stall)? Drives the view's sub-tick fluid slide.
-  arrived?: boolean[];
 }
 
 export interface Organ {
@@ -284,50 +281,26 @@ export function doTick(w: World): void {
     for (let i = 0; i < p.parcels.length; i++) if (p.inc[i]) reactParcel(chem, p.parcels[i]);
   }
 
-  // 3) ADVECTION — a parcel advances one cell only where the cell ahead is
-  // incarnate and has room; a blocked outlet (ghost cell ahead, or a
-  // growing organ at the tail) stalls the whole column behind it. Fluid is
-  // never destroyed by a stall — mass balance is an inference tool the
-  // player must always be able to trust.
-  const plans = new Map<number, { moves: boolean[]; acceptHead: boolean }>();
-  const isEmpty = (pc: Parcel) => totalParticles(chem, pc.c) === 0;
-  for (const p of w.veins.values()) {
-    const n = p.cells.length;
-    const moves = new Array<boolean>(n);
-    const t = p.tail;
-    let exit = false;
-    if (p.inc[n - 1]) {
-      if (t.type === 'open') exit = true;
-      else if (t.type === 'merge') {
-        const seg = resolveAttach(w, t);
-        exit = !!seg && seg.vein.inc[seg.idx] === 1;
-      } else if (t.type === 'organ-in') {
-        const o = w.organs.get(t.organId);
-        exit = !!o && organGrown(o);
-      }
-    }
-    moves[n - 1] = exit;
-    for (let i = n - 2; i >= 0; i--) {
-      moves[i] = p.inc[i + 1] === 1 && (moves[i + 1] || isEmpty(p.parcels[i + 1]));
-    }
-    const acceptHead = p.inc[0] === 1 && (moves[0] || isEmpty(p.parcels[0]));
-    plans.set(p.id, { moves, acceptHead });
-  }
-  // fork extraction (pre-shift, only for veins that will actually take it)
+  // 3) ADVECTION — veins have infinite throughput: everything advances one
+  // cell every tick, nothing ever stalls. Fluid that runs out of vein
+  // vents into the cavity; every vent is structurally visible — an open
+  // tail, the frontier of a still-incarnating ghost, a growing organ's
+  // mouth — so mass-balance inference stays honest: what goes missing went
+  // missing somewhere the player can point at.
+  // forks extract pre-shift (only where both junction cells are incarnate)
   const headIn = new Map<number, Parcel>();
   for (const p of w.veins.values()) {
-    if (p.head.type === 'fork' && plans.get(p.id)!.acceptHead) {
+    if (p.head.type === 'fork' && p.inc[0]) {
       const seg = resolveAttach(w, p.head);
-      headIn.set(p.id, seg ? splitHalf(chem, seg.vein.parcels[seg.idx]) : emptyParcel(chem));
+      if (seg && seg.vein.inc[seg.idx]) headIn.set(p.id, splitHalf(chem, seg.vein.parcels[seg.idx]));
     }
   }
   const tailOut = new Map<number, Parcel>();
   for (const p of w.veins.values()) {
-    const { moves, acceptHead } = plans.get(p.id)!;
     const n = p.cells.length;
-    if (moves[n - 1]) tailOut.set(p.id, p.parcels[n - 1]);
+    if (p.inc[n - 1]) tailOut.set(p.id, p.parcels[n - 1]);
     let fill: Parcel | null = null;
-    if (acceptHead) {
+    if (p.inc[0]) {
       if (p.head.type === 'source') fill = sourceParcel(chem, p.head.spIdx);
       else if (p.head.type === 'fork') fill = headIn.get(p.id) ?? null;
       else if (p.head.type === 'port') {
@@ -343,31 +316,24 @@ export function doTick(w: World): void {
     }
     const old = p.parcels;
     const next = new Array<Parcel>(n);
-    const arrived = new Array<boolean>(n).fill(false);
-    for (let i = n - 1; i >= 0; i--) {
-      const incoming = i === 0 ? fill : moves[i - 1] ? old[i - 1] : null;
-      if (incoming) {
-        // if the cell didn't vacate, the plan guarantees it held an empty
-        // parcel — its wall heat rides along into the arrival
-        if (!moves[i]) incoming.U += old[i].U;
-        next[i] = incoming;
-        arrived[i] = true;
-      } else {
-        next[i] = moves[i] ? emptyParcel(chem) : old[i];
-      }
+    for (let i = n - 1; i >= 1; i--) {
+      // a parcel shifting into a not-yet-incarnate cell vents at the frontier
+      next[i] = p.inc[i] ? old[i - 1] : emptyParcel(chem);
     }
+    next[0] = fill ?? emptyParcel(chem);
     p.parcels = next;
-    p.arrived = arrived;
   }
   for (const p of w.veins.values()) {
     const out = tailOut.get(p.id);
     if (!out) continue;
     if (p.tail.type === 'merge') {
       const seg = resolveAttach(w, p.tail);
-      if (seg) addInto(chem, seg.vein.parcels[seg.idx], out);
+      // a merge target still ghost = the junction isn't built yet: vents
+      if (seg && seg.vein.inc[seg.idx]) addInto(chem, seg.vein.parcels[seg.idx], out);
     } else if (p.tail.type === 'organ-in') {
       const o = w.organs.get(p.tail.organId);
-      if (o) {
+      // a growing organ swallows its feed (it's building itself with it)
+      if (o && organGrown(o)) {
         if (o.inAccum) addInto(chem, o.inAccum, out);
         else o.inAccum = out;
       }
@@ -538,6 +504,12 @@ export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }):
   if (!segs || segs.length === 0) return { ok: false, msg: 'no vein here' };
   for (const { vein: p, idx: i } of segs) {
     if (i < 2 || i > p.cells.length - 3) continue;
+    // refuse positions that would strand a 1-cell fragment: veins are
+    // always ≥2 cells, and silently dropping the orphan would destroy its
+    // fluid and dangle any attachments onto it
+    if (i - 2 === 1 || p.cells.length - (i + 3) === 1) {
+      return { ok: false, msg: 'too close to the end of the vein' };
+    }
     if (!p.inc.slice(i - 2, i + 3).every((v) => v === 1)) {
       return { ok: false, msg: 'the vein here is not grown in yet' };
     }
