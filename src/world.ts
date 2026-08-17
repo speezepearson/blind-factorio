@@ -1,7 +1,7 @@
 import {
   addInto, ambientLeak, cloneParcel, emptyParcel, exchangeHeat, radCount, reactParcel, rnd,
   sourceParcel, splitHalf, stochRound, tempOf, totalParticles,
-  K_ALONG, K_CROSS,
+  K_ALONG, K_CROSS, SCALE,
 } from './chem';
 import type { Chemistry, Parcel } from './chem';
 
@@ -26,7 +26,7 @@ export const CELL = 21;
 export const HIST = 400; // rolling probe-history window, ticks
 const HIST_CAP = 1600; // max segments carrying passive history
 export const GROW_TICKS = 10; // ticks for a budded organ to grow in
-const INC_PERIOD = 2; // ticks per cell of ghost-vein incarnation
+export const INC_PERIOD = 2; // ticks per cell of ghost-vein incarnation
 
 export const key = (x: number, y: number) => x + ',' + y;
 export const parseKey = (k: string): [number, number] => k.split(',').map(Number) as [number, number];
@@ -409,7 +409,7 @@ export function doTick(w: World): void {
       if (!h && (totalParticles(chem, parcel.c) > 0 || p.probed)) h = ensureHist(w, p, i);
       if (!h) continue;
       const base = slot * (chem.nsp + 1);
-      for (let s = 0; s < chem.nsp; s++) h[base + s] = parcel.c[s] / 10000;
+      for (let s = 0; s < chem.nsp; s++) h[base + s] = parcel.c[s] / SCALE;
       h[base + chem.nsp] = tempOf(chem, parcel);
     }
   }

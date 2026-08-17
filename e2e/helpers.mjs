@@ -98,13 +98,7 @@ export async function launch(hash = '') {
         organs: [...w.organs.values()].map((o) => ({ cx: o.cx, cy: o.cy, growth: o.growth })),
         maxTemp: Math.max(
           1,
-          ...[...w.veins.values()].flatMap((p) =>
-            p.parcels.map((pc) => {
-              let rad = 0;
-              for (let i = 0; i < chem.nsp; i++) rad += pc.c[i] * (chem.species[i].length);
-              return (pc.U * 0.01) / (0.8 * rad + 400);
-            }),
-          ),
+          ...[...w.veins.values()].flatMap((p) => p.parcels.map((pc) => window.__veins.tempOf(pc))),
         ),
       };
     });

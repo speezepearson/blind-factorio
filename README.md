@@ -5,9 +5,10 @@ A prototype of a **veins-and-organs game about doing science**. Fluids made of h
 single generative law the player never sees. Observation is lossy — color is an
 ambiguous projection of composition — so progress means designing experiments, inducing
 the laws, and exploiting them. The full physics design lives in
-`~/radical-chemistry-design-summary.md` (with two reference prototypes,
-`~/radical-kinetics-sandbox.jsx` and `~/radical-veins-game.jsx`, which this app is a
-TypeScript port and continuation of).
+[`docs/radical-chemistry-design-summary.md`](docs/radical-chemistry-design-summary.md)
+(a snapshot; the editable originals, plus the two reference prototypes
+`radical-kinetics-sandbox.jsx` and `radical-veins-game.jsx` that this app is a
+TypeScript port and continuation of, live in `~/` on the dev VM).
 
 This repo previously hosted the wavelength-optics prototype "blind-factorio"; that whole
 game is preserved at the git tag `wavelength-era`.

@@ -1,5 +1,5 @@
 import { fluidColor, speciesColor, tempOf, T_AMB, SCALE } from './chem';
-import { CELL, COLS, GROW_TICKS, ROWS, organGrown, parseKey } from './world';
+import { CELL, COLS, GROW_TICKS, INC_PERIOD, ROWS, organGrown, parseKey } from './world';
 import type { Vein, World } from './world';
 
 // The view layer: a torn-open cavity in some vast biological machine. The
@@ -148,13 +148,18 @@ function strokeSeg(ctx: CanvasRenderingContext2D, pts: Array<[number, number]>, 
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.beginPath();
-  const steps = Math.max(1, Math.ceil(t1 - t0));
   let [px, py] = posAt(pts, t0);
   ctx.moveTo(px, py);
-  for (let s = 1; s <= steps; s++) {
-    [px, py] = posAt(pts, t0 + ((t1 - t0) * s) / steps);
-    ctx.lineTo(px, py);
+  // visit every interior cell center so the stroke follows corners
+  // instead of chording across them
+  for (let t = Math.floor(t0) + 1; t < t1; t++) {
+    if (t > t0) {
+      [px, py] = posAt(pts, t);
+      ctx.lineTo(px, py);
+    }
   }
+  [px, py] = posAt(pts, t1);
+  ctx.lineTo(px, py);
   ctx.stroke();
 }
 
@@ -189,7 +194,10 @@ function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein): void
   const growF = (i: number) => {
     if (!p.inc[i]) return 0;
     if (p.incTick[i] <= 0) return 1;
-    return Math.max(0.05, Math.min(1, (phase - p.incTick[i]) / 2));
+    // incTick is recorded before the tick counter advances, so the first
+    // rendered frame sees phase - incTick ≈ 1; the -1 makes extrusion start
+    // from ~0 and finish just as the next cell begins its own
+    return Math.max(0.03, Math.min(1, (phase - p.incTick[i] - 1) / INC_PERIOD));
   };
   const wallW = (i: number) => Math.max(4.5, widthOf(p.flow[i]) * wave(i, p.flow[i]) + 3);
   for (let i = 0; i < n; i++) {

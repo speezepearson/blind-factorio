@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_RADICALS, buildChemistry } from './chem';
+import { DEFAULT_RADICALS, buildChemistry, tempOf } from './chem';
+import type { Parcel } from './chem';
 import {
   CELL, COLS, ROWS, doTick, ensureHist, eraseCells, key, snapshotWorld, tryBud, commitVein,
 } from './world';
@@ -389,13 +390,16 @@ export default function App() {
     chem.setStickiness(next);
   };
 
-  // debug handle for the e2e suites (dev server only)
+  // debug handle for the e2e suites (dev server only). tempOf is exposed so
+  // tests read temperature through the real formula instead of duplicating
+  // physics constants.
   useEffect(() => {
     if (import.meta.env.DEV) {
       (window as unknown as Record<string, unknown>).__veins = {
         world: () => worldRef.current,
         chem,
         tick: () => doTick(worldRef.current),
+        tempOf: (p: Parcel) => tempOf(chem, p),
       };
     }
   }, []);
