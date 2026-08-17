@@ -1,47 +1,53 @@
-import { defaultBudget } from './machines';
-import { buildStarterWorld } from './starter';
-import type { Cell, ParamValue, World } from './types';
+import { commitVein, makeWorld, tryBud } from './world';
+import type { World } from './world';
+import type { Chemistry } from './chem';
 
 export interface Preset {
   id: string;
   name: string;
-  build: (w: number, h: number) => World;
+  build: (chem: Chemistry) => World;
 }
 
-function emptyWorld(w: number, h: number): World {
-  return {
-    w, h, pipelines: [], junctions: [], machines: [], budget: defaultBudget(),
-    nextMachineId: 1, nextPipelineId: 1, nextJunctionId: 1,
-  };
+// axis-aligned path through waypoints, inclusive of the first
+function pathThrough(waypoints: Array<[number, number]>): Array<{ x: number; y: number }> {
+  const path = [{ x: waypoints[0][0], y: waypoints[0][1] }];
+  for (const [wx, wy] of waypoints.slice(1)) {
+    let { x, y } = path[path.length - 1];
+    while (x !== wx || y !== wy) {
+      if (x !== wx) x += Math.sign(wx - x);
+      else y += Math.sign(wy - y);
+      path.push({ x, y });
+    }
+  }
+  return path;
 }
 
-// Two sources and two sinks, all four of which *look* the same chartreuse
-// green. One source is pure 556 nm light; the other is red 650 nm + green
-// 540 nm flowing together, whose combined light is nearly identical. Each
-// sink wants one of those mixtures and lights up only when fed the right
-// wavelengths, so the player has to work out which lookalike is which (a
-// blender averages 650+540 into ~595 nm orange — visibly different! — so
-// telling them apart is possible, but takes thought).
-function buildLookalikeWorld(w: number, h: number): World {
-  const world = emptyWorld(w, h);
-  const add = (typeId: string, origin: Cell, params?: Record<string, ParamValue>) => {
-    world.machines.push({ id: world.nextMachineId++, typeId, origin, rotation: 0, params });
-  };
-  add('spring', [20, 25], { mixture: [{ wl: 556, rate: 2 }] });
-  add('spring', [20, 70], { mixture: [{ wl: 650, rate: 1 }, { wl: 540, rate: 1 }] });
-  add('sink', [135, 25], { mixture: [{ wl: 650, rate: 1 }, { wl: 540, rate: 1 }], tol: 12 });
-  add('sink', [135, 70], { mixture: [{ wl: 556, rate: 1 }], tol: 12 });
-  // a puzzle budget: plenty of pipe, a few analysis machines, no new
-  // springs/sinks — the lookalikes on the map are all you get
-  world.budget = {
-    pipe: 700,
-    machines: { spring: 0, reactor: 0, funnel: 2, blender: 1, filter: 2, buffer: 1, sink: 0, fabricator: 1 },
-  };
-  return world;
+// A worked example: an R vein and a G vein merge and run east — the joined
+// stretch turns yellow and warms as fusion releases bond energy — then a
+// radical filter splits survivors from composites. Sources sit at x=1,
+// y = 2 + 4·spIdx (R:2, G:6, B:10).
+function buildDemo(chem: Chemistry): World {
+  const w = makeWorld(chem);
+  const R = chem.speciesIndex('R');
+  const G = chem.speciesIndex('G');
+  const trunk = commitVein(
+    w,
+    pathThrough([[2, 2], [8, 2], [8, 14], [40, 14]]),
+    { type: 'source', spIdx: R },
+    { type: 'open' },
+  )!;
+  // ends beside the trunk's x=8 column; the tail merges into cell (8,6)
+  commitVein(
+    w,
+    pathThrough([[2, 6], [7, 6]]),
+    { type: 'source', spIdx: G },
+    { type: 'merge', veinId: trunk.id, cellKey: '8,6' },
+  );
+  tryBud(w, '24,14');
+  return w;
 }
 
 export const PRESETS: Preset[] = [
-  { id: 'starter', name: 'Starter tour', build: buildStarterWorld },
-  { id: 'lookalike', name: 'Green, two ways', build: buildLookalikeWorld },
-  { id: 'blank', name: 'Blank canvas', build: emptyWorld },
+  { id: 'demo', name: 'Fuse & filter demo', build: buildDemo },
+  { id: 'blank', name: 'Fresh slate', build: (chem) => makeWorld(chem) },
 ];

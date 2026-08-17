@@ -3,15 +3,21 @@
   flex-direction: column;
   gap: 10px;
   padding: 12px;
-  height: 100vh;
+  min-height: 100vh;
   box-sizing: border-box;
 }
 
-.toolbar {
+.toolbar,
+.stickrow {
   display: flex;
   gap: 6px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.toolbar h1 {
+  font-size: 18px;
+  margin: 0 8px 0 2px;
 }
 
 .toolbar .spacer {
@@ -37,30 +43,6 @@
   cursor: pointer;
 }
 
-.toolbar .slider {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #333;
-  padding: 0 4px;
-  min-width: 150px;
-}
-
-.toolbar .slider input {
-  width: 100px;
-}
-
-.toolbar .checkbox {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 13px;
-  color: #333;
-  cursor: pointer;
-  padding: 0 6px;
-}
-
 .toolbar button:hover:not(:disabled) {
   background: #f3f1ea;
 }
@@ -76,149 +58,105 @@
   border-color: #2b2823;
 }
 
+.toolbar .slider,
+.toolbar .checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #333;
+  padding: 0 4px;
+}
+
+.toolbar .slider input {
+  width: 110px;
+}
+
+.toolbar .flash {
+  font-size: 12.5px;
+  color: #a5372c;
+  font-weight: 600;
+}
+
+.stickrow {
+  gap: 14px;
+  margin-left: 2px;
+}
+
+.stickrow .label {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #6c7d87;
+  font-weight: 700;
+}
+
+.stickrow .stick {
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #333;
+}
+
+.stickrow .stick input {
+  width: 90px;
+}
+
+.mono {
+  font-family: 'SF Mono', 'Cascadia Code', Menlo, monospace;
+  font-size: 12px;
+  color: #40626f;
+}
+
+.dim {
+  color: #8a99a2;
+}
+
 .main {
   display: flex;
   gap: 12px;
   align-items: flex-start;
-  min-height: 0;
 }
 
 canvas {
-  border: 1px solid #c9c5bc;
-  border-radius: 4px;
+  background: #f7f9fa;
+  border: 1px solid #cfd8dd;
+  border-radius: 8px;
+  display: block;
   cursor: crosshair;
-  max-width: calc(100% - 300px);
-  height: auto;
+}
+
+.hint {
+  font-size: 11.5px;
+  color: #7a8a94;
+  margin-top: 6px;
+  max-width: 966px;
+  line-height: 1.5;
 }
 
 .panel {
-  width: 280px;
-  flex: none;
+  width: 380px;
+  flex: 0 0 auto;
+}
+
+.panel .help {
   background: #fff;
   border: 1px solid #c9c5bc;
   border-radius: 6px;
   padding: 12px 14px;
   font-size: 13px;
-  line-height: 1.45;
-  color: #333;
+  line-height: 1.5;
+  color: #444;
 }
 
-.panel .budget {
-  margin: 0 0 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #eee;
-  font-size: 12px;
-  color: #555;
-}
-
-.panel .budget label {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  margin: 2px 8px 2px 0;
-  white-space: nowrap;
-}
-
-.panel .budget input[type='number'] {
-  width: 3.4em;
-  font-size: 12px;
-}
-
-.panel h2 {
-  margin: 0 0 6px;
+.panel .help h2 {
+  margin: 0 0 8px;
   font-size: 15px;
   color: #111;
 }
 
-.panel .rule {
+.panel .help p {
   margin: 0 0 10px;
-  color: #555;
-}
-
-.panel table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.panel td {
-  padding: 3px 4px;
-  border-top: 1px solid #eee;
-  vertical-align: top;
-}
-
-.panel .help {
-  margin: 0;
-  padding-left: 16px;
-}
-
-.panel .help li {
-  margin-bottom: 6px;
-}
-
-.panel .param {
-  display: block;
-  margin: 10px 0;
-}
-
-.panel .param input {
-  display: block;
-  width: 100%;
-  margin-top: 4px;
-}
-
-.panel .mixture-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 6px 0;
-  font-size: 12px;
-}
-
-.panel .mixture-row input,
-.panel .mixture .swatch {
-  display: inline-block;
-  width: auto;
-  margin-top: 0;
-}
-
-.panel .mixture-row input[type='range'] {
-  flex: 1;
-  min-width: 60px;
-}
-
-.panel .mixture-row input[type='number'] {
-  width: 4em;
-}
-
-.panel .mixture-row b {
-  white-space: nowrap;
-}
-
-.panel .mixture button {
-  font: 12px/1.2 var(--sans);
-  padding: 3px 8px;
-  border-radius: 5px;
-  border: 1px solid #c9c5bc;
-  background: #fff;
-  cursor: pointer;
-}
-
-.dim {
-  color: #999;
-}
-
-.fluid {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-right: 8px;
-  white-space: nowrap;
-}
-
-.swatch {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  border: 1px solid rgba(0, 0, 0, 0.25);
 }
