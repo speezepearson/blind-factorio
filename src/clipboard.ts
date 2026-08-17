@@ -1,3 +1,4 @@
+import { refundMachine, refundPipe, takeMachine, takePipe } from './budget';
 import {
   CELL, cellKey, machineCellMap, parseKey, pipelineCellSet, placeMachine,
 } from './geom';
@@ -101,9 +102,10 @@ function rotateCanvas90(src: HTMLCanvasElement): HTMLCanvasElement {
 }
 
 // Rotate the whole clipboard a quarter-turn clockwise within its bounding
-// box: cell (x,y) maps to (h-1-y, x), pump sides advance one step, machine
-// rotations advance one step (with their bounding-box origin remapped
-// accordingly), and the outline polygon turns with it.
+// box: cell (x,y) maps to (h-1-y, x), machine rotations advance one step
+// (with their bounding-box origin remapped accordingly), and the outline
+// polygon turns with it. Pipeline flow direction is implicit in cell order,
+// so pipe rotation is pure geometry.
 export function rotateClipboard(clip: Clipboard): Clipboard {
   const h = clip.h;
   return {
@@ -134,8 +136,8 @@ export function rotateClipboard(clip: Clipboard): Clipboard {
 }
 
 // Whether a placed machine's footprint fits: in bounds, off other machines,
-// and off pumps. `ignoreId` excludes a machine (itself) from the collision
-// check, for use while moving it.
+// and off pipes and junctions. `ignoreId` excludes a machine (itself) from
+// the collision check, for use while moving it.
 export function machinePlacementOk(world: World, placed: PlacedMachine, ignoreId?: number): boolean {
   const occupied = machineCellMap(placeAll(world).filter((pm) => pm.machine.id !== ignoreId));
   const pipeCells = pipelineCellSet(world.pipelines);
@@ -196,15 +198,12 @@ export function pasteClipboard(world: World, tl: Cell, clip: Clipboard, useBudge
       rotation: m.rotation,
       params: m.params ? { ...m.params } : undefined,
     };
-    if (useBudget) {
-      if ((world.budget.machines[m.typeId] ?? 0) >= 1) world.budget.machines[m.typeId]! -= 1;
-      else machine.ghost = true;
-    }
+    if (useBudget && !takeMachine(world.budget, m.typeId)) machine.ghost = true;
     if (machinePlacementOk(world, placeMachine(machine, TYPE_BY_ID[m.typeId]))) {
       world.machines.push(machine);
       world.nextMachineId++;
     } else if (useBudget && !machine.ghost) {
-      world.budget.machines[m.typeId] = (world.budget.machines[m.typeId] ?? 0) + 1; // didn't fit — refund
+      refundMachine(world.budget, m.typeId); // didn't fit — put it back in stock
     }
   }
   const occupied = machineCellMap(placeAll(world));
@@ -223,9 +222,13 @@ export function pasteClipboard(world: World, tl: Cell, clip: Clipboard, useBudge
     );
     if (ok && cells.length > 0) {
       const pipeline: Pipeline = { id: world.nextPipelineId++, cells };
+      // whole pipelines only — a pasted pipe is either all real or all ghost
       if (useBudget) {
-        if (world.budget.pipe >= cells.length) world.budget.pipe -= cells.length;
-        else pipeline.ghost = true; // whole pipelines only: no half-built paste
+        const got = takePipe(world.budget, cells.length);
+        if (got < cells.length) {
+          refundPipe(world.budget, got);
+          pipeline.ghost = true;
+        }
       }
       world.pipelines.push(pipeline);
     }

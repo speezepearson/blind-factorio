@@ -53,14 +53,14 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     y * CELL + CELL / 2 + (DY[s] * CELL) / 2,
   ];
 
-  const drawPumpBase = (x: number, y: number, alpha = 1) => {
+  const drawPipeBase = (x: number, y: number, alpha = 1) => {
     ctx.globalAlpha = alpha;
     ctx.fillStyle = 'rgba(0, 0, 0, 0.04)';
     ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
     ctx.globalAlpha = 1;
   };
 
-  const drawPumpArrow = (x: number, y: number, inSide: Side, outSide: Side, fluidColor: string | null, rate: number, alpha = 1) => {
+  const drawPipeSegment = (x: number, y: number, inSide: Side, outSide: Side, fluidColor: string | null, rate: number, alpha = 1) => {
     ctx.globalAlpha = alpha;
     // empty pipes: narrow faint lines; carrying pipes: the fluid's light
     // (black, if it's all invisible infrared), width ~ sqrt(rate)
@@ -88,17 +88,17 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     if (pl.ghost) {
       ctx.setLineDash([2.5, 3.5]);
       for (const { cell: [x, y], inSide, outSide } of orientPath(pl.cells)) {
-        drawPumpArrow(x, y, inSide, outSide, '#b3ada2', 0);
+        drawPipeSegment(x, y, inSide, outSide, '#b3ada2', 0);
       }
       ctx.setLineDash([]);
       continue;
     }
     const contents = sim.pipeFluids.get(pl.id);
     orientPath(pl.cells).forEach(({ cell: [x, y], inSide, outSide }, i) => {
-      drawPumpBase(x, y);
+      drawPipeBase(x, y);
       const fm = contents?.[i];
       const rate = totalRate(fm);
-      drawPumpArrow(x, y, inSide, outSide, rate > 1e-4 ? mixtureColor(fm) : null, rate);
+      drawPipeSegment(x, y, inSide, outSide, rate > 1e-4 ? mixtureColor(fm) : null, rate);
     });
   }
 
@@ -267,8 +267,8 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
   if (view.godMode && drag?.mode === 'pipe') {
     for (const { cell, inSide, outSide } of orientPath(drag.path)) {
       if (!occupied.has(cellKey(cell[0], cell[1]))) {
-        drawPumpBase(cell[0], cell[1], 0.55);
-        drawPumpArrow(cell[0], cell[1], inSide, outSide, null, 0, 0.55);
+        drawPipeBase(cell[0], cell[1], 0.55);
+        drawPipeSegment(cell[0], cell[1], inSide, outSide, null, 0, 0.55);
       }
     }
   }

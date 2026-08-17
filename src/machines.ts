@@ -72,7 +72,9 @@ export function paleTint(hex: string): string {
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
-// target mixture from a two-wavelength + share parametrization (shares sum to 1)
+// Legacy-only: target mixture from the old two-wavelength + share sink
+// parametrization (colorA/colorB/mixB), kept so pre-mixture world codes
+// still load. New code uses 'mixture' param lists throughout.
 function targetMixture(wlA: number, wlB: number, mixB: number): FluidMap {
   const t: FluidMap = {};
   const add = (wl: number, share: number) => {

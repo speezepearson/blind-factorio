@@ -343,7 +343,7 @@ function PanelBody({ world, sim, tool, hover, selectedId, godMode, clipboard, co
         <li><b>Budget:</b> building spends your stock of pipe and machines; erasing refunds it. What you can't afford appears as a dashed ghost — feed a <b>fabricator</b> red light and it builds ghosts in for real.</li>
         <li><b>Merging:</b> release a pipe drag <i>on</i> an existing pipe to splice in a junction — the flows sum downstream. Start a drag on a junction to tap it. Erasing any segment removes that whole stretch of pipe, junction to junction.</li>
         <li><b>Copy/paste:</b> lasso (or click a square around) a patch of factory to stamp out elsewhere, machines included.</li>
-        <li><b>Erase:</b> lasso (or click a square around) a region to wipe — pumps inside it are removed, and machines overlapping it even partially are removed whole.</li>
+        <li><b>Erase:</b> lasso (or click a square around) a region to wipe — pipes touching it and machines overlapping it even partially are removed whole.</li>
         <li>Hover anything to inspect its rule and live flows here.</li>
         <li>Blue edges are input ports, orange edges are output ports.</li>
         {godMode && (

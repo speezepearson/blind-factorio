@@ -22,7 +22,7 @@ export function dirFromTo(a: Cell, b: Cell): Side {
   return 3;
 }
 
-export interface OrientedPump {
+export interface OrientedCell {
   cell: Cell;
   inSide: Side;
   outSide: Side;
@@ -33,7 +33,7 @@ export interface OrientedPump {
 // Endpoints point straight through — the first cell pulls from just before
 // the path, the last pushes out just past it (that's where machine ports
 // attach).
-export function orientPath(path: Cell[]): OrientedPump[] {
+export function orientPath(path: Cell[]): OrientedCell[] {
   return path.map((cell, i) => {
     const prev = path[i - 1];
     const next = path[i + 1];

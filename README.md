@@ -88,7 +88,8 @@ npm run lint    # oxlint
 | `src/App.tsx` | The UI shell: tools, mouse handling, undo/redo, world sharing. |
 | `src/render.ts` | Canvas rendering of the world + tool overlays. |
 | `src/clipboard.ts` | Regions (squares or lassoed blobs: bbox + cell set + outline polygon) and copy/paste/rotate of them. |
-| `src/Panel.tsx` | The inspector/help side panel, including the spring's mixture-list editor. |
+| `src/budget.ts` | Player-budget accounting (take/refund for pipe cells and machines) — the only place stock changes. |
+| `src/Panel.tsx` | The inspector/help side panel, including the mixture-list editor springs and sinks share and the budget strip (read-only for players, editable in god mode). |
 
 ## UI architecture (read before touching App.tsx)
 
@@ -125,8 +126,12 @@ base64 alphabet; links look like `https://blind-factorio.exe.xyz/#world=<code>`.
 
 ## Verifying changes
 
-There are no unit tests yet. The workflow that has caught every regression so far:
-`npm run build`, then drive the dev server with Playwright (installed in the session
-scratchpad, headless Chromium) — place machines, drag pipes, hover things, and read the
-inspector panel text and screenshots. See git history for the kinds of end-to-end checks
-each feature shipped with.
+`npm run build` (the de-facto typecheck), `npm run lint`, then `npm run e2e` — the
+end-to-end suites in `e2e/` drive a dev server (expected on 5173, override with
+`E2E_URL`) with headless Playwright Chromium: they place machines, drag pipes, hover
+things, and read the inspector panel text. Each file is standalone
+(`node e2e/<name>.mjs`); `e2e/helpers.mjs` holds the shared driver. One recurring
+gotcha lives there already: toggling god mode reflows the toolbar and moves the
+canvas, so cell→pixel math must re-fetch the canvas bounding box after every toggle
+(use the `godToggle`/`loadPreset` helpers, which do). First-time setup:
+`npx playwright install chromium`.

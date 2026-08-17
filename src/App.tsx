@@ -9,6 +9,7 @@ import { worldFromCode, worldToCode } from './serialize';
 import { buildStarterWorld } from './starter';
 import { PRESETS } from './presets';
 import type { Cell, Machine, ParamDef, ParamValue, World } from './types';
+import { refundMachine, refundPipe, takePipe } from './budget';
 import {
   bboxTL, captureRegion, lassoRegion, machinePlacementOk, pasteClipboard, rotateClipboard, squareRegion,
 } from './clipboard';
@@ -64,9 +65,9 @@ export default function App() {
   const [simSpeed, setSimSpeed] = useState(1); // sim time-scale: ticks/sec multiplier
   const [copySize, setCopySize] = useState(19); // copy square side, in fine cells (odd)
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
-  // God mode = the designer's view: labels, fine grid, machine placement,
-  // editing. Off (the default) = the player's obscured view: anonymous
-  // machines + blur.
+  // God mode = the designer's view: labels, machine placement, editing.
+  // Off (the default) = the player's view: anonymous machines, secretive
+  // pipes, blind pipe drawing.
   const [godMode, setGodMode] = useState(false);
   const [placeRotation, setPlaceRotation] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -173,7 +174,7 @@ export default function App() {
       const ids = new Set(goners.map((pl) => pl.id));
       world.pipelines = world.pipelines.filter((pl) => !ids.has(pl.id));
       if (refund) {
-        for (const pl of goners) if (!pl.ghost) world.budget.pipe += pl.cells.length;
+        for (const pl of goners) if (!pl.ghost) refundPipe(world.budget, pl.cells.length);
       }
     }
     world.junctions = world.junctions.filter(
@@ -187,9 +188,7 @@ export default function App() {
       world.machines = world.machines.filter((m) => !doomed.has(m.id));
       if (refund) {
         for (const pm of doomedPms) {
-          if (!pm.machine.ghost) {
-            world.budget.machines[pm.machine.typeId] = (world.budget.machines[pm.machine.typeId] ?? 0) + 1;
-          }
+          if (!pm.machine.ghost) refundMachine(world.budget, pm.machine.typeId);
         }
       }
     }
@@ -218,11 +217,7 @@ export default function App() {
     if (cells.length === 0) return;
     checkpoint();
 
-    let afford = cells.length;
-    if (!godModeRef.current) {
-      afford = Math.min(cells.length, Math.max(0, Math.floor(world.budget.pipe)));
-      world.budget.pipe -= afford;
-    }
+    const afford = godModeRef.current ? cells.length : takePipe(world.budget, cells.length);
     const real = cells.slice(0, afford);
     const ghostCells = cells.slice(afford);
     const realCells = base ? [...base.cells, ...real] : real;
@@ -283,8 +278,8 @@ export default function App() {
   // ---- copy/paste --------------------------------------------------------
 
   // Photograph the copied region's bounding box for use as the paste ghost.
-  // Reads the offscreen world canvas, so the snapshot is unaffected by the
-  // lake warp (and tool overlays, which are drawn on the visible canvas).
+  // Reads the offscreen world canvas, so the snapshot never captures tool
+  // overlays (those are drawn on the visible canvas only).
   const snapshotRegion = (region: Region): HTMLCanvasElement | undefined => {
     const snap = document.createElement('canvas');
     snap.width = region.w * CELL;
@@ -428,7 +423,7 @@ export default function App() {
     if (!cell) return;
     const t = toolRef.current;
     if (t.kind === 'pipe') {
-      // starting on a machine is fine: pumps appear once the drag leaves it.
+      // starting on a machine is fine: the pipe appears once the drag leaves it.
       // Starting on a pipeline's dangling tail picks that pipeline back up.
       const ext = danglingTailAt(worldRef.current, cell);
       dragRef.current = { mode: 'pipe', path: [cell], extendId: ext?.id };
