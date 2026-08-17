@@ -172,7 +172,7 @@ export function stochRound(x: number): number {
   return k;
 }
 
-// ---- parcels: one cell's worth of fluid + wall, sharing a heat ledger ----
+// ---- parcels: one cell's worth of fluid, with its heat ledger ----
 
 export interface Parcel {
   c: Int32Array; // particle counts per species
@@ -219,7 +219,17 @@ export function splitHalf(chem: Chemistry, parcel: Parcel): Parcel {
   let hU = parcel.U >> 1;
   if (parcel.U & 1 && rnd() < 0.5) hU++;
   parcel.U -= hU;
-  return { c, U: hU };
+  const out: Parcel = { c, U: hU };
+  // heat can't ride on nothing (empty parcels hold U=0 by invariant): if
+  // either half got all the particles, it takes all the heat too
+  if (radCount(chem, c) === 0) {
+    parcel.U += out.U;
+    out.U = 0;
+  } else if (radCount(chem, parcel.c) === 0) {
+    out.U += parcel.U;
+    parcel.U = 0;
+  }
+  return out;
 }
 export function addInto(chem: Chemistry, target: Parcel, src: Parcel): void {
   for (let i = 0; i < chem.nsp; i++) target.c[i] += src.c[i];

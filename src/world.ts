@@ -58,8 +58,8 @@ export interface Vein {
   probed?: boolean;
   // Incarnation: drawn veins start as ghosts (inc all 0) and grow real,
   // one cell per INC_PERIOD ticks, spreading from every contact with the
-  // live network. Ghost cells have no walls: they carry no fluid, exchange
-  // no heat, and stall any column trying to advance into them.
+  // live network. Ghost cells have no walls: they carry no fluid and
+  // exchange no heat — fluid reaching the frontier vents into the cavity.
   inc: number[]; // 1 = incarnate
   incTick: number[]; // world tick the cell incarnated (-1 = never), for smooth extrusion
 }
@@ -77,8 +77,8 @@ export interface Organ {
   outReady: Parcel | null;
   sideReady: Parcel | null;
   // A freshly budded organ grows over GROW_TICKS ticks. While growing it
-  // accepts and emits nothing (the feeder vein stalls); the stretch of host
-  // vein under it stays visible until growth completes, then is removed.
+  // swallows its feed and emits nothing; the stretch of host vein under it
+  // stays visible until growth completes, then is removed.
   growth: number; // ticks grown; >= GROW_TICKS = fully incarnate
   understretchId: number | null; // the doomed host-vein stretch beneath it
   load: number; // smoothed input radicals/tick (drives the heartbeat pulse)
@@ -504,14 +504,33 @@ export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }):
   if (!segs || segs.length === 0) return { ok: false, msg: 'no vein here' };
   for (const { vein: p, idx: i } of segs) {
     if (i < 2 || i > p.cells.length - 3) continue;
-    // refuse positions that would strand a 1-cell fragment: veins are
-    // always ≥2 cells, and silently dropping the orphan would destroy its
-    // fluid and dangle any attachments onto it
-    if (i - 2 === 1 || p.cells.length - (i + 3) === 1) {
+    // Each cut end must leave either a proper (≥2-cell) fragment or
+    // nothing-with-nothing-attached: a 1-cell orphan would be silently
+    // dropped (destroying fluid, dangling attachments), and a 0-cell cut
+    // with a live attachment (a source head, a merge tail) would silently
+    // sever it.
+    const upLen = i - 2;
+    const downLen = p.cells.length - (i + 3);
+    if (upLen === 1 || downLen === 1) return { ok: false, msg: 'too close to the end of the vein' };
+    if ((upLen === 0 && p.head.type !== 'open') || (downLen === 0 && p.tail.type !== 'open')) {
       return { ok: false, msg: 'too close to the end of the vein' };
     }
     if (!p.inc.slice(i - 2, i + 3).every((v) => v === 1)) {
       return { ok: false, msg: 'the vein here is not grown in yet' };
+    }
+    // Refuse if any OTHER vein junctions onto the doomed stretch: when the
+    // understretch is collected, that fork/merge would dangle and become a
+    // permanent vent hidden under the organ body — exactly the invisible
+    // sink the venting model forbids.
+    const doomedKeys = new Set(p.cells.slice(i - 2, i + 3).map((c) => c.k));
+    for (const q of w.veins.values()) {
+      if (q.id === p.id) continue;
+      if (q.head.type === 'fork' && doomedKeys.has(q.head.cellKey)) {
+        return { ok: false, msg: "there's a junction in the way" };
+      }
+      if (q.tail.type === 'merge' && doomedKeys.has(q.tail.cellKey)) {
+        return { ok: false, msg: "there's a junction in the way" };
+      }
     }
     const run = p.cells.slice(i - 2, i + 3);
     const horiz = run.every((c) => c.y === run[0].y);

@@ -111,7 +111,7 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
   if (doc.stick && typeof doc.stick === 'object') {
     for (const r of chem.radicals) {
       const v = Number(doc.stick[r.id]);
-      if (Number.isFinite(v)) stick[r.id] = Math.max(0, Math.min(6, v));
+      if (Number.isFinite(v)) stick[r.id] = Math.max(0, Math.min(4, v)); // match the god slider's range
     }
   }
 

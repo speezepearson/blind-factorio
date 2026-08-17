@@ -53,8 +53,8 @@ await ticks(90); // connector ~35 cells → ~70 ticks, then the ghost fills in
   ok('and fluid reaches it through the junction', !!ghost && (ghost.totals.R ?? 0) > 1000);
 }
 
-// conservation spot-check: pause everything mid-flow and confirm the world
-// only ever contains what the sources emitted (no stall ever destroys mass)
+// invariant spot-check: fluid only ever occupies incarnate cells — the
+// frontier vents, it never admits
 {
   const drained = await page.evaluate(() => {
     const w = window.__veins.world();

@@ -71,11 +71,14 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
 - **Infinite throughput; every sink is visible.** Everything advances one cell per
   tick, nothing ever queues. Fluid that runs out of vein *vents* into the cavity —
   at an open tail, at the frontier of a still-incarnating ghost, at a not-yet-built
-  merge junction, or into a growing organ's mouth (it's building itself with it).
-  Mass-balance inference stays honest because every vent is a structural feature the
-  player can point at; fluid never vanishes mid-vein.
+  merge junction, into a growing organ's mouth (it's building itself with it), or
+  as unconsumed organ output at a port with no vein on it. Mass-balance inference
+  stays honest because every vent is a structural feature the player can point at;
+  fluid never vanishes mid-vein (budding refuses stretches that would hide a
+  junction — and thus a vent — under the organ body).
 - **Organs** grow by *budding*: double-click a straight, incarnate 5-cell stretch
-  (not within 3 cells of an end); the host vein is cut into a feeder and a
+  (each cut end must leave a ≥2-cell fragment, or nothing with nothing attached,
+  and no other vein may junction onto the stretch); the host vein is cut into a feeder and a
   continuation, and the organ swells over GROW_TICKS (10) ticks — swallowing its
   feed and emitting nothing while it grows (downstream drains). The stretch of host
   vein beneath it (the "understretch") stays until growth completes, then is
