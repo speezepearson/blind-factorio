@@ -585,13 +585,21 @@ export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }):
       }
     }
     const manh = (u: VeinCell, v: VeinCell) => Math.abs(u.x - v.x) + Math.abs(u.y - v.y);
+    // Freely-placed ports prefer wall cells no surviving vein runs through:
+    // a port sitting on a live stretch would capture its mouse interactions
+    // (no more forking there, no drawing through). The doomed stretch [a..b]
+    // doesn't count — it's about to be eaten.
+    const occupied = (c: VeinCell) =>
+      (w.cellSegs.get(c.k) ?? []).some((s) => s.vein.id !== p.id || s.idx < a || s.idx > b);
     // ring cell farthest (min-distance) from the cells to avoid
-    const farthestRing = (avoid: VeinCell[]) =>
-      ring.reduce((best, c) => {
+    const farthestRing = (avoid: VeinCell[]) => {
+      const candidates = ring.filter((c) => !occupied(c));
+      return (candidates.length > 0 ? candidates : ring).reduce((best, c) => {
         const d = Math.min(...avoid.map((v) => manh(c, v)));
         const bd = Math.min(...avoid.map((v) => manh(best, v)));
         return d > bd ? c : best;
       });
+    };
     const portIn = mk(p.cells[a].x, p.cells[a].y);
     let portOut: VeinCell;
     const downPrepend: VeinCell[] = [];

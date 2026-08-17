@@ -149,7 +149,14 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
     const cells = vd.cells.filter(
       (c): c is [number, number] => Array.isArray(c) && Number.isInteger(c[0]) && Number.isInteger(c[1]),
     );
-    const p = commitVein(w, cells.map(([x, y]) => ({ x, y })), { type: 'open' }, { type: 'open' }, true);
+    // the whole engine assumes veins are 4-connected paths — reject any
+    // crafted code whose cells jump
+    const connected = cells.every(
+      (c, i) => i === 0 || Math.abs(c[0] - cells[i - 1][0]) + Math.abs(c[1] - cells[i - 1][1]) === 1,
+    );
+    const p = connected
+      ? commitVein(w, cells.map(([x, y]) => ({ x, y })), { type: 'open' }, { type: 'open' }, true)
+      : null;
     if (p && Array.isArray(vd.inc)) {
       for (let i = 0; i < p.cells.length; i++) {
         p.inc[i] = vd.inc[i] === 1 ? 1 : 0;

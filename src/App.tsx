@@ -303,8 +303,9 @@ export default function App() {
     }
     if (cells.length < 2) {
       // a zero-movement click (e.g. half of a bud double-click) stays
-      // silent; only a real attempt at drawing warrants the complaint
-      if (dr.cells.length >= 1 && (dragHeadRef.current.type !== 'open' || dr.endOrganIn)) {
+      // silent; a real drawing attempt that connected to something — a
+      // source/fork head, an organ mouth, or a merge release — complains
+      if (dr.cells.length >= 1 && (dragHeadRef.current.type !== 'open' || dr.endOrganIn || tail.type === 'merge')) {
         flashMsg('vein too short');
       }
       return;

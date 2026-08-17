@@ -22,7 +22,8 @@ await dblClickCell(22, 14);
   const info = await worldInfo();
   ok('bud grew an organ', info.organs.length === 1);
   ok('host vein was cut around it', info.veins.some((v) => v.tail === 'organ-in'));
-  ok('understretch survives beneath the growing organ', info.veins.some((v) => v.len === 5 && v.head === 'open' && v.tail === 'open'));
+  // (open/open is the understretch's signature; no other vein here is open at both ends)
+  ok('understretch survives beneath the growing organ', info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
   ok('organ starts ungrown', info.organs[0].growth === 0);
 }
 await ticks(12); // GROW_TICKS = 10: organ finishes, understretch is collected

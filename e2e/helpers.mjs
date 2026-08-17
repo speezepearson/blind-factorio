@@ -3,8 +3,9 @@ import { chromium } from 'playwright';
 // Shared harness for the Veins e2e suites. Each test is standalone
 // (`node e2e/<name>.mjs`) against a dev server on 5173 (E2E_URL to
 // override). The dev build exposes `window.__veins` — {world(), chem,
-// tick()} — which the suites use to fast-forward the sim deterministically
-// and to read world state that the player-facing UI deliberately hides.
+// tick(), tempOf(parcel)} — which the suites use to fast-forward the sim
+// deterministically and to read world state (including temperature via the
+// real formula) that the player-facing UI deliberately hides.
 
 export const COLS = 46;
 export const ROWS = 30;
