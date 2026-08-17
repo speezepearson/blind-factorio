@@ -73,7 +73,7 @@ export interface Organ {
   portIn: VeinCell;
   portOut: VeinCell;
   portSide: VeinCell;
-  sideCW: boolean;
+  sideCW: boolean; // vestigial (pre-generalized-budding); kept for the doc format
   inAccum: Parcel | null;
   outReady: Parcel | null;
   sideReady: Parcel | null;
@@ -496,10 +496,12 @@ export function eraseCells(w: World, keys: Set<string>): void {
   }
 }
 
-// Bud an organ on a straight 5-cell stretch of vein centered at cellKey.
-// The host vein is cut: upstream feeds the organ's in, downstream grows
-// from its out port. (Hard-coded to the radical filter for now — the
-// mixture-determined budding grammar is a later milestone.)
+// Bud an organ centered on any incarnate vein cell: its 5×5 footprint eats
+// the contiguous in-footprint stretch of that vein. The host is cut:
+// upstream feeds the organ's in port, downstream grows from its out port,
+// both sitting where the vein crossed the organ wall. (Hard-coded to the
+// radical filter for now — the mixture-determined budding grammar is a
+// later milestone.)
 export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }): { ok: boolean; msg: string } {
   const segs = w.cellSegs.get(cellKey);
   if (!segs || segs.length === 0) return { ok: false, msg: 'no vein here' };

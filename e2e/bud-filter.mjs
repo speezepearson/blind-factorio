@@ -1,4 +1,4 @@
-// Budding: double-click a straight stretch grows the radical filter, cuts
+// Budding: double-click a vein grows the radical filter, cuts
 // the host vein, and its ports route singles vs composites.
 import { finish, launch, ok } from './helpers.mjs';
 

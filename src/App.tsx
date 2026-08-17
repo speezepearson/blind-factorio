@@ -302,7 +302,11 @@ export default function App() {
       }
     }
     if (cells.length < 2) {
-      if (dragHeadRef.current.type !== 'open' || dr.endOrganIn) flashMsg('vein too short');
+      // a zero-movement click (e.g. half of a bud double-click) stays
+      // silent; only a real attempt at drawing warrants the complaint
+      if (dr.cells.length >= 1 && (dragHeadRef.current.type !== 'open' || dr.endOrganIn)) {
+        flashMsg('vein too short');
+      }
       return;
     }
     checkpoint();
@@ -514,7 +518,7 @@ export default function App() {
           <p className="hint">
             drag from a colored <b>source</b> to lay a fed vein · drag from mid-vein to <b>fork</b> (50/50) · end a
             drag on a vein to <b>merge</b>, or on an organ's <b>in</b> port to feed it · <b>double-click</b> a
-            straight stretch of vein to bud an organ
+            vein to bud an organ
             {godMode ? (
               <>
                 {' '}
