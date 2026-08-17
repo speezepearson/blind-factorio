@@ -1,4 +1,4 @@
-import { commitVein, makeWorld, reindex } from './world';
+import { GROW_TICKS, commitVein, makeWorld, reindex } from './world';
 import type { Head, Organ, Tail, VeinCell, World } from './world';
 import type { Chemistry } from './chem';
 
@@ -15,6 +15,7 @@ interface VeinDoc {
   cells: Array<[number, number]>;
   head: Head; // fork/merge veinIds are *indices into the veins array*
   tail: Tail;
+  inc?: number[]; // per-cell incarnation (omitted = fully incarnate)
 }
 
 interface OrganDoc {
@@ -56,7 +57,10 @@ async function pipeBytes(bytes: Uint8Array, transform: GenericTransformStream): 
 }
 
 export async function worldToCode(w: World): Promise<string> {
-  const veins = [...w.veins.values()];
+  // understretches (host-vein remnants beneath growing organs) are doomed
+  // transients — exported organs arrive fully grown, so skip them
+  const doomed = new Set([...w.organs.values()].map((o) => o.understretchId).filter((id) => id !== null));
+  const veins = [...w.veins.values()].filter((p) => !doomed.has(p.id));
   const veinIndex = new Map(veins.map((p, i) => [p.id, i]));
   const organs = [...w.organs.values()];
   const organIndex = new Map(organs.map((o, i) => [o.id, i]));
@@ -79,6 +83,7 @@ export async function worldToCode(w: World): Promise<string> {
       cells: p.cells.map((c) => [c.x, c.y] as [number, number]),
       head: remapHead(p.head),
       tail: remapTail(p.tail),
+      ...(p.inc.every((v) => v === 1) ? {} : { inc: [...p.inc] }),
     })),
     organs: organs.map((o) => ({
       cx: o.cx,
@@ -130,6 +135,9 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
       inAccum: null,
       outReady: null,
       sideReady: null,
+      growth: GROW_TICKS,
+      understretchId: null,
+      load: 0,
     };
     w.organs.set(o.id, o);
     organIds.push(o.id);
@@ -140,7 +148,13 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
     const cells = vd.cells.filter(
       (c): c is [number, number] => Array.isArray(c) && Number.isInteger(c[0]) && Number.isInteger(c[1]),
     );
-    const p = commitVein(w, cells.map(([x, y]) => ({ x, y })), { type: 'open' }, { type: 'open' });
+    const p = commitVein(w, cells.map(([x, y]) => ({ x, y })), { type: 'open' }, { type: 'open' }, true);
+    if (p && Array.isArray(vd.inc)) {
+      for (let i = 0; i < p.cells.length; i++) {
+        p.inc[i] = vd.inc[i] === 1 ? 1 : 0;
+        p.incTick[i] = p.inc[i] ? 0 : -1;
+      }
+    }
     veinIds.push(p ? p.id : -1);
     if (p) pending.push({ veinIdx: veinIds.length - 1, head: vd.head, tail: vd.tail });
   }

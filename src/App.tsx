@@ -104,6 +104,8 @@ export default function App() {
           tempOverlay: overlayRef.current,
           drag: dragRef.current,
           probes: probesRef.current,
+          phase: worldRef.current.tick + Math.max(0, Math.min(1, acc)),
+          timeMs: now,
         });
       }
       raf = requestAnimationFrame(frame);

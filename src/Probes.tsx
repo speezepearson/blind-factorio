@@ -28,9 +28,9 @@ const btn = {
   padding: '7px 11px',
   borderRadius: 6,
   cursor: 'pointer',
-  border: '1px solid #c3ced4',
-  background: '#fff',
-  color: '#5a6b75',
+  border: '1px solid #4a3f42',
+  background: '#2c2528',
+  color: '#cfc4bd',
 };
 
 export function ProbePanel(props: {
@@ -81,28 +81,28 @@ export function ProbePanel(props: {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-        <div style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#6c7d87', fontWeight: 700 }}>
+        <div style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#8d7f84', fontWeight: 700 }}>
           Probes
         </div>
         {probes.length > 0 &&
           <button style={btn} onClick={onClear}>clear all</button>}
       </div>
       {probes.length === 0 && (
-        <div style={{ fontSize: 12, color: '#8a99a2', padding: 10, background: '#fbfcfd', border: '1px dashed #cfd8dd', borderRadius: 8 }}>
+        <div style={{ fontSize: 12, color: '#8d7f84', padding: 10, background: '#211b1e', border: '1px dashed #443a3c', borderRadius: 8 }}>
           right-click a vein cell (or use the probe tool) to chart its composition &amp; temperature here
         </div>
       )}
       {probes.map((pr, i) => {
         const gd = graphData[i];
         return (
-          <div key={pr.id} style={{ background: '#fbfcfd', border: '1px solid #cfd8dd', borderRadius: 8, padding: '6px 8px 2px', marginBottom: 10 }}>
+          <div key={pr.id} style={{ background: '#262023', border: '1px solid #443a3c', borderRadius: 8, padding: '6px 8px 2px', marginBottom: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ ...mono, fontSize: 11.5, color: '#40626f' }}>
+              <span style={{ ...mono, fontSize: 11.5, color: '#9db4bd' }}>
                 #{i + 1} {pr.label}{gd && gd.dead ? ' (gone)' : ''}
               </span>
               <button
                 onClick={() => onRemove(pr.id)}
-                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#a5372c', fontWeight: 700, fontSize: 13 }}
+                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#e07a6a', fontWeight: 700, fontSize: 13 }}
               >
                 ✕
               </button>
@@ -110,12 +110,12 @@ export function ProbePanel(props: {
             <div style={{ height: 150 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={gd ? gd.rows : []} margin={{ top: 4, right: 2, left: -18, bottom: -6 }}>
-                  <CartesianGrid stroke="#eef2f4" vertical={false} />
-                  <XAxis dataKey="t" type="number" domain={['dataMin', 'dataMax']} tick={{ fontSize: 9 }} />
-                  <YAxis yAxisId="c" tick={{ fontSize: 9 }} />
-                  <YAxis yAxisId="T" orientation="right" tick={{ fontSize: 9 }} width={28} />
+                  <CartesianGrid stroke="#3a3134" vertical={false} />
+                  <XAxis dataKey="t" type="number" domain={['dataMin', 'dataMax']} tick={{ fontSize: 9, fill: '#8d7f84' }} />
+                  <YAxis yAxisId="c" tick={{ fontSize: 9, fill: '#8d7f84' }} />
+                  <YAxis yAxisId="T" orientation="right" tick={{ fontSize: 9, fill: '#8d7f84' }} width={28} />
                   <Tooltip
-                    contentStyle={{ fontSize: 10.5, fontFamily: mono.fontFamily }}
+                    contentStyle={{ fontSize: 10.5, fontFamily: mono.fontFamily, background: '#262023', border: '1px solid #443a3c', color: '#d8cfc9' }}
                     formatter={(v, n) => [Number(v).toFixed(3), n]}
                     labelFormatter={(v) => 'tick ' + v}
                   />
@@ -137,7 +137,7 @@ export function ProbePanel(props: {
                     yAxisId="T"
                     dataKey="temp"
                     type="monotone"
-                    stroke="#111"
+                    stroke="#e8e2dc"
                     strokeWidth={1.5}
                     strokeDasharray="5 3"
                     dot={false}

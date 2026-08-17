@@ -18,6 +18,7 @@
 .toolbar h1 {
   font-size: 18px;
   margin: 0 8px 0 2px;
+  color: #e8ddd2;
 }
 
 .toolbar .spacer {
@@ -27,7 +28,7 @@
 .toolbar .divider {
   width: 1px;
   height: 22px;
-  background: #c9c5bc;
+  background: #443a3c;
   margin: 0 4px;
 }
 
@@ -36,26 +37,26 @@
   font: 13px/1.2 var(--sans);
   padding: 6px 12px;
   border-radius: 6px;
-  border: 1px solid #c9c5bc;
+  border: 1px solid #4a3f42;
   border-bottom-width: 3px;
-  background: #fff;
-  color: #333;
+  background: #2c2528;
+  color: #cfc4bd;
   cursor: pointer;
 }
 
 .toolbar button:hover:not(:disabled) {
-  background: #f3f1ea;
+  background: #362e31;
 }
 
 .toolbar button:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: default;
 }
 
 .toolbar button.active {
-  background: #2b2823;
-  color: #fff;
-  border-color: #2b2823;
+  background: #d8cfc9;
+  color: #241d20;
+  border-color: #d8cfc9;
 }
 
 .toolbar .slider,
@@ -64,8 +65,13 @@
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: #333;
+  color: #cfc4bd;
   padding: 0 4px;
+}
+
+.toolbar .slider input,
+.stickrow .stick input {
+  accent-color: #9db4bd;
 }
 
 .toolbar .slider input {
@@ -74,7 +80,7 @@
 
 .toolbar .flash {
   font-size: 12.5px;
-  color: #a5372c;
+  color: #e07a6a;
   font-weight: 600;
 }
 
@@ -87,7 +93,7 @@
   font-size: 11px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #6c7d87;
+  color: #8d7f84;
   font-weight: 700;
 }
 
@@ -97,7 +103,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: #333;
+  color: #cfc4bd;
 }
 
 .stickrow .stick input {
@@ -107,11 +113,11 @@
 .mono {
   font-family: 'SF Mono', 'Cascadia Code', Menlo, monospace;
   font-size: 12px;
-  color: #40626f;
+  color: #9db4bd;
 }
 
 .dim {
-  color: #8a99a2;
+  color: #8d7f84;
 }
 
 .main {
@@ -121,8 +127,8 @@
 }
 
 canvas {
-  background: #f7f9fa;
-  border: 1px solid #cfd8dd;
+  background: #221316;
+  border: 1px solid #4a3a38;
   border-radius: 8px;
   display: block;
   cursor: crosshair;
@@ -130,7 +136,7 @@ canvas {
 
 .hint {
   font-size: 11.5px;
-  color: #7a8a94;
+  color: #8d7f84;
   margin-top: 6px;
   max-width: 966px;
   line-height: 1.5;
@@ -142,19 +148,19 @@ canvas {
 }
 
 .panel .help {
-  background: #fff;
-  border: 1px solid #c9c5bc;
+  background: #262023;
+  border: 1px solid #443a3c;
   border-radius: 6px;
   padding: 12px 14px;
   font-size: 13px;
   line-height: 1.5;
-  color: #444;
+  color: #c4b8b2;
 }
 
 .panel .help h2 {
   margin: 0 0 8px;
   font-size: 15px;
-  color: #111;
+  color: #e8ddd2;
 }
 
 .panel .help p {

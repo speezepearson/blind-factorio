@@ -10,16 +10,25 @@ await page.waitForTimeout(200);
 await pause();
 
 // R and G merge into a trunk running east at y=14, so the filter gets a
-// genuine mixture (R, G, RG) to split
+// genuine mixture (R, G, RG) to split. Drawn veins are ghosts: give the
+// incarnation front (1 cell / 2 ticks) time to build them in.
 await drawVein([[1, 2], [6, 2], [6, 14], [38, 14]]);
 await drawVein([[1, 6], [4, 6], [4, 13], [6, 13]]); // releases ON the trunk column: merge
-await ticks(50);
+await ticks(130);
 
+// budding is refused on a ghost — but the trunk is grown-in by now
 await dblClickCell(22, 14);
 {
   const info = await worldInfo();
   ok('bud grew an organ', info.organs.length === 1);
   ok('host vein was cut around it', info.veins.some((v) => v.tail === 'organ-in'));
+  ok('understretch survives beneath the growing organ', info.veins.some((v) => v.len === 5 && v.head === 'open' && v.tail === 'open'));
+  ok('organ starts ungrown', info.organs[0].growth === 0);
+}
+await ticks(12); // GROW_TICKS = 10: organ finishes, understretch is collected
+{
+  const info = await worldInfo();
+  ok('grown organ collects the understretch', !info.veins.some((v) => v.len === 5 && v.head === 'open' && v.tail === 'open'));
 }
 
 // grow veins from both output ports (out: east of center; rad: north or south)
@@ -35,7 +44,7 @@ const sidePort = await page.evaluate(() => {
 });
 const sideDir = sidePort[1] > 14 ? 1 : -1;
 await drawVein([sidePort, [sidePort[0], sidePort[1] + sideDir * 6]]);
-await ticks(250);
+await ticks(300); // port veins incarnate from the grown organ, then flow
 {
   const info = await worldInfo();
   const ports = info.veins.filter((v) => v.head === 'port');

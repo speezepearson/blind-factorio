@@ -25,6 +25,8 @@ export const ROWS = 30;
 export const CELL = 21;
 export const HIST = 400; // rolling probe-history window, ticks
 const HIST_CAP = 1600; // max segments carrying passive history
+export const GROW_TICKS = 10; // ticks for a budded organ to grow in
+const INC_PERIOD = 2; // ticks per cell of ghost-vein incarnation
 
 export const key = (x: number, y: number) => x + ',' + y;
 export const parseKey = (k: string): [number, number] => k.split(',').map(Number) as [number, number];
@@ -54,6 +56,15 @@ export interface Vein {
   flow: number[]; // smoothed radicals/tick per cell, drives drawn width
   hist: Array<Float32Array | null>; // per-cell probe history ring buffers
   probed?: boolean;
+  // Incarnation: drawn veins start as ghosts (inc all 0) and grow real,
+  // one cell per INC_PERIOD ticks, spreading from every contact with the
+  // live network. Ghost cells have no walls: they carry no fluid, exchange
+  // no heat, and stall any column trying to advance into them.
+  inc: number[]; // 1 = incarnate
+  incTick: number[]; // world tick the cell incarnated (-1 = never), for smooth extrusion
+  // transient, per tick, not serialized/snapshotted: did cell i's parcel
+  // arrive this tick (vs stall)? Drives the view's sub-tick fluid slide.
+  arrived?: boolean[];
 }
 
 export interface Organ {
@@ -68,7 +79,15 @@ export interface Organ {
   inAccum: Parcel | null;
   outReady: Parcel | null;
   sideReady: Parcel | null;
+  // A freshly budded organ grows over GROW_TICKS ticks. While growing it
+  // accepts and emits nothing (the feeder vein stalls); the stretch of host
+  // vein under it stays visible until growth completes, then is removed.
+  growth: number; // ticks grown; >= GROW_TICKS = fully incarnate
+  understretchId: number | null; // the doomed host-vein stretch beneath it
+  load: number; // smoothed input radicals/tick (drives the heartbeat pulse)
 }
+
+export const organGrown = (o: Organ) => o.growth >= GROW_TICKS;
 
 export interface Source {
   x: number;
@@ -134,7 +153,7 @@ export function reindex(w: World): void {
   }
 }
 
-function newVein(w: World, cells: Array<{ x: number; y: number }>, head: Head, tail: Tail): Vein {
+function newVein(w: World, cells: Array<{ x: number; y: number }>, head: Head, tail: Tail, incarnate: boolean): Vein {
   const p: Vein = {
     id: w.nextId++,
     cells: cells.map((c) => ({ x: c.x, y: c.y, k: key(c.x, c.y) })),
@@ -143,6 +162,8 @@ function newVein(w: World, cells: Array<{ x: number; y: number }>, head: Head, t
     parcels: cells.map(() => emptyParcel(w.chem)),
     hist: cells.map(() => null),
     flow: cells.map(() => 0),
+    inc: cells.map(() => (incarnate ? 1 : 0)),
+    incTick: cells.map(() => (incarnate ? 0 : -1)),
   };
   w.veins.set(p.id, p);
   return p;
@@ -173,54 +194,174 @@ export function resolveAttach(
 
 // ---------------- the tick ----------------
 
+// One step of ghost-vein incarnation: every ghost cell touching the live
+// network — along its own vein, or at any attachment or junction with an
+// incarnate cell, a source, or a grown organ — becomes incarnate. Called
+// every INC_PERIOD ticks, so fronts advance one cell per period.
+function growthStep(w: World): void {
+  const grow: Array<{ p: Vein; i: number }> = [];
+  const liveAt = (att: { veinId: number; cellKey: string }): boolean => {
+    const seg = resolveAttach(w, att);
+    return !!seg && seg.vein.inc[seg.idx] === 1;
+  };
+  const grownOrgan = (id: number): boolean => {
+    const o = w.organs.get(id);
+    return !!o && organGrown(o);
+  };
+  for (const p of w.veins.values()) {
+    const n = p.cells.length;
+    const last = n - 1;
+    for (let i = 0; i < n; i++) {
+      if (p.inc[i]) continue;
+      if ((i > 0 && p.inc[i - 1]) || (i < last && p.inc[i + 1])) {
+        grow.push({ p, i });
+        continue;
+      }
+      if (i === 0) {
+        const h = p.head;
+        if (
+          h.type === 'source' ||
+          (h.type === 'fork' && liveAt(h)) ||
+          (h.type === 'port' && grownOrgan(h.organId))
+        ) {
+          grow.push({ p, i });
+          continue;
+        }
+      }
+      if (i === last) {
+        const t = p.tail;
+        if ((t.type === 'merge' && liveAt(t)) || (t.type === 'organ-in' && grownOrgan(t.organId))) grow.push({ p, i });
+      }
+    }
+  }
+  // junction seeds: an incarnate vein end touching a ghost cell mid-vein
+  for (const q of w.veins.values()) {
+    if (q.head.type === 'fork' && q.inc[0] === 1) {
+      const seg = resolveAttach(w, q.head);
+      if (seg && !seg.vein.inc[seg.idx]) grow.push({ p: seg.vein, i: seg.idx });
+    }
+    if (q.tail.type === 'merge' && q.inc[q.cells.length - 1] === 1) {
+      const seg = resolveAttach(w, q.tail);
+      if (seg && !seg.vein.inc[seg.idx]) grow.push({ p: seg.vein, i: seg.idx });
+    }
+  }
+  for (const { p, i } of grow) {
+    p.inc[i] = 1;
+    p.incTick[i] = w.tick;
+  }
+}
+
 export function doTick(w: World): void {
   const chem = w.chem;
 
-  // 1) HEAT — along veins, across co-located veins, ambient leak
+  // 0) INCARNATION — ghost veins grow real where they touch live network
+  if (w.tick % INC_PERIOD === 0) growthStep(w);
+
+  // 1) HEAT — along veins, across co-located veins, ambient leak. Ghost
+  // cells have no walls: they take no part in any of it.
   for (const p of w.veins.values()) {
-    for (let i = 0; i + 1 < p.parcels.length; i++) exchangeHeat(chem, p.parcels[i], p.parcels[i + 1], K_ALONG);
+    for (let i = 0; i + 1 < p.parcels.length; i++) {
+      if (p.inc[i] && p.inc[i + 1]) exchangeHeat(chem, p.parcels[i], p.parcels[i + 1], K_ALONG);
+    }
   }
   for (const segs of w.cellSegs.values()) {
     if (segs.length > 1) {
       for (let i = 0; i + 1 < segs.length; i++) {
-        exchangeHeat(chem, segs[i].vein.parcels[segs[i].idx], segs[i + 1].vein.parcels[segs[i + 1].idx], K_CROSS);
+        const a = segs[i];
+        const b = segs[i + 1];
+        if (a.vein.inc[a.idx] && b.vein.inc[b.idx]) {
+          exchangeHeat(chem, a.vein.parcels[a.idx], b.vein.parcels[b.idx], K_CROSS);
+        }
       }
     }
   }
-  for (const p of w.veins.values()) for (const parcel of p.parcels) ambientLeak(chem, parcel);
+  for (const p of w.veins.values()) {
+    for (let i = 0; i < p.parcels.length; i++) if (p.inc[i]) ambientLeak(chem, p.parcels[i]);
+  }
 
   // 2) REACTIONS
-  for (const p of w.veins.values()) for (const parcel of p.parcels) reactParcel(chem, parcel);
+  for (const p of w.veins.values()) {
+    for (let i = 0; i < p.parcels.length; i++) if (p.inc[i]) reactParcel(chem, p.parcels[i]);
+  }
 
-  // 3) ADVECTION — forks extract pre-shift, tails deliver post-shift
+  // 3) ADVECTION — a parcel advances one cell only where the cell ahead is
+  // incarnate and has room; a blocked outlet (ghost cell ahead, or a
+  // growing organ at the tail) stalls the whole column behind it. Fluid is
+  // never destroyed by a stall — mass balance is an inference tool the
+  // player must always be able to trust.
+  const plans = new Map<number, { moves: boolean[]; acceptHead: boolean }>();
+  const isEmpty = (pc: Parcel) => totalParticles(chem, pc.c) === 0;
+  for (const p of w.veins.values()) {
+    const n = p.cells.length;
+    const moves = new Array<boolean>(n);
+    const t = p.tail;
+    let exit = false;
+    if (p.inc[n - 1]) {
+      if (t.type === 'open') exit = true;
+      else if (t.type === 'merge') {
+        const seg = resolveAttach(w, t);
+        exit = !!seg && seg.vein.inc[seg.idx] === 1;
+      } else if (t.type === 'organ-in') {
+        const o = w.organs.get(t.organId);
+        exit = !!o && organGrown(o);
+      }
+    }
+    moves[n - 1] = exit;
+    for (let i = n - 2; i >= 0; i--) {
+      moves[i] = p.inc[i + 1] === 1 && (moves[i + 1] || isEmpty(p.parcels[i + 1]));
+    }
+    const acceptHead = p.inc[0] === 1 && (moves[0] || isEmpty(p.parcels[0]));
+    plans.set(p.id, { moves, acceptHead });
+  }
+  // fork extraction (pre-shift, only for veins that will actually take it)
   const headIn = new Map<number, Parcel>();
   for (const p of w.veins.values()) {
-    if (p.head.type === 'fork') {
+    if (p.head.type === 'fork' && plans.get(p.id)!.acceptHead) {
       const seg = resolveAttach(w, p.head);
       headIn.set(p.id, seg ? splitHalf(chem, seg.vein.parcels[seg.idx]) : emptyParcel(chem));
     }
   }
   const tailOut = new Map<number, Parcel>();
-  for (const p of w.veins.values()) tailOut.set(p.id, p.parcels[p.parcels.length - 1]);
   for (const p of w.veins.values()) {
-    for (let i = p.parcels.length - 1; i >= 1; i--) p.parcels[i] = p.parcels[i - 1];
+    const { moves, acceptHead } = plans.get(p.id)!;
+    const n = p.cells.length;
+    if (moves[n - 1]) tailOut.set(p.id, p.parcels[n - 1]);
     let fill: Parcel | null = null;
-    if (p.head.type === 'source') fill = sourceParcel(chem, p.head.spIdx);
-    else if (p.head.type === 'fork') fill = headIn.get(p.id) ?? null;
-    else if (p.head.type === 'port') {
-      const o = w.organs.get(p.head.organId);
-      if (o) {
-        const slot = p.head.port === 'side' ? 'sideReady' : 'outReady';
-        if (o[slot]) {
-          fill = o[slot];
-          o[slot] = null;
+    if (acceptHead) {
+      if (p.head.type === 'source') fill = sourceParcel(chem, p.head.spIdx);
+      else if (p.head.type === 'fork') fill = headIn.get(p.id) ?? null;
+      else if (p.head.type === 'port') {
+        const o = w.organs.get(p.head.organId);
+        if (o) {
+          const slot = p.head.port === 'side' ? 'sideReady' : 'outReady';
+          if (o[slot]) {
+            fill = o[slot];
+            o[slot] = null;
+          }
         }
       }
     }
-    p.parcels[0] = fill ?? emptyParcel(chem);
+    const old = p.parcels;
+    const next = new Array<Parcel>(n);
+    const arrived = new Array<boolean>(n).fill(false);
+    for (let i = n - 1; i >= 0; i--) {
+      const incoming = i === 0 ? fill : moves[i - 1] ? old[i - 1] : null;
+      if (incoming) {
+        // if the cell didn't vacate, the plan guarantees it held an empty
+        // parcel — its wall heat rides along into the arrival
+        if (!moves[i]) incoming.U += old[i].U;
+        next[i] = incoming;
+        arrived[i] = true;
+      } else {
+        next[i] = moves[i] ? emptyParcel(chem) : old[i];
+      }
+    }
+    p.parcels = next;
+    p.arrived = arrived;
   }
   for (const p of w.veins.values()) {
-    const out = tailOut.get(p.id)!;
+    const out = tailOut.get(p.id);
+    if (!out) continue;
     if (p.tail.type === 'merge') {
       const seg = resolveAttach(w, p.tail);
       if (seg) addInto(chem, seg.vein.parcels[seg.idx], out);
@@ -233,7 +374,29 @@ export function doTick(w: World): void {
     }
     // open tails vent (discarded)
   }
-  for (const o of w.organs.values()) organProcess(w, o);
+  // organs: growing ones just grow; on completion the host stretch beneath
+  // is garbage-collected (it has been hidden under the organ since budding)
+  let reindexNeeded = false;
+  for (const o of w.organs.values()) {
+    if (!organGrown(o)) {
+      o.growth++;
+      o.outReady = null;
+      o.sideReady = null;
+      o.inAccum = null;
+      if (organGrown(o) && o.understretchId !== null) {
+        const stretch = w.veins.get(o.understretchId);
+        if (stretch) {
+          for (const h of stretch.hist) if (h) w.histCount--;
+          w.veins.delete(stretch.id);
+          reindexNeeded = true;
+        }
+        o.understretchId = null;
+      }
+      continue;
+    }
+    organProcess(w, o);
+  }
+  if (reindexNeeded) reindex(w);
 
   // 4) RECORD
   w.tick++;
@@ -261,6 +424,7 @@ function organProcess(w: World, o: Organ): void {
   o.sideReady = null; // unconsumed previous output vents
   const inp = o.inAccum;
   o.inAccum = null;
+  o.load = o.load * 0.9 + (inp ? radCount(chem, inp.c) : 0) * 0.1;
   if (!inp || totalParticles(chem, inp.c) === 0) return;
   const main: Parcel = { c: new Int32Array(chem.nsp), U: 0 };
   const side: Parcel = { c: new Int32Array(chem.nsp), U: 0 };
@@ -282,14 +446,17 @@ function organProcess(w: World, o: Organ): void {
 
 // ---------------- editing ops ----------------
 
+// Player-drawn veins start as ghosts; preset/import builders pass
+// incarnate: true to lay live vasculature.
 export function commitVein(
   w: World,
   rawCells: Array<{ x: number; y: number }>,
   head: Head,
   tail: Tail,
+  incarnate = false,
 ): Vein | null {
   if (rawCells.length < 2) return null;
-  const p = newVein(w, rawCells, head, tail);
+  const p = newVein(w, rawCells, head, tail, incarnate);
   reindex(w);
   return p;
 }
@@ -314,7 +481,10 @@ export function eraseCells(w: World, keys: Set<string>): void {
       continue;
     }
     w.veins.delete(p.id);
-    type Run = { cell: VeinCell; parcel: Parcel; hist: Float32Array | null; flow: number; i: number };
+    type Run = {
+      cell: VeinCell; parcel: Parcel; hist: Float32Array | null; flow: number;
+      inc: number; incTick: number; i: number;
+    };
     let run: Run[] = [];
     const flush = () => {
       if (run.length >= 2) {
@@ -326,6 +496,8 @@ export function eraseCells(w: World, keys: Set<string>): void {
           parcels: run.map((r) => r.parcel),
           hist: run.map((r) => r.hist),
           flow: run.map((r) => r.flow),
+          inc: run.map((r) => r.inc),
+          incTick: run.map((r) => r.incTick),
           head: isFirst ? p.head : { type: 'open' },
           tail: isLast ? p.tail : { type: 'open' },
           probed: p.probed,
@@ -340,7 +512,10 @@ export function eraseCells(w: World, keys: Set<string>): void {
         flush();
         if (p.hist[i]) w.histCount--;
       } else {
-        run.push({ cell: p.cells[i], parcel: p.parcels[i], hist: p.hist[i], flow: p.flow[i], i });
+        run.push({
+          cell: p.cells[i], parcel: p.parcels[i], hist: p.hist[i], flow: p.flow[i],
+          inc: p.inc[i], incTick: p.incTick[i], i,
+        });
       }
     }
     flush();
@@ -358,11 +533,14 @@ export function eraseCells(w: World, keys: Set<string>): void {
 // The host vein is cut: upstream feeds the organ's in, downstream grows
 // from its out port. (Hard-coded to the radical filter for now — the
 // mixture-determined budding grammar is a later milestone.)
-export function tryBud(w: World, cellKey: string): { ok: boolean; msg: string } {
+export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }): { ok: boolean; msg: string } {
   const segs = w.cellSegs.get(cellKey);
   if (!segs || segs.length === 0) return { ok: false, msg: 'no vein here' };
   for (const { vein: p, idx: i } of segs) {
     if (i < 2 || i > p.cells.length - 3) continue;
+    if (!p.inc.slice(i - 2, i + 3).every((v) => v === 1)) {
+      return { ok: false, msg: 'the vein here is not grown in yet' };
+    }
     const run = p.cells.slice(i - 2, i + 3);
     const horiz = run.every((c) => c.y === run[0].y);
     const vert = run.every((c) => c.x === run[0].x);
@@ -394,6 +572,7 @@ export function tryBud(w: World, cellKey: string): { ok: boolean; msg: string } 
     const cw = rnd() < 0.5;
     const sideDir = cw ? { x: -din.y, y: din.x } : { x: din.y, y: -din.x };
     const mk = (x: number, y: number): VeinCell => ({ x, y, k: key(x, y) });
+    const instant = opts?.instant ?? false;
     const o: Organ = {
       id: w.nextId++,
       cx,
@@ -406,13 +585,35 @@ export function tryBud(w: World, cellKey: string): { ok: boolean; msg: string } 
       inAccum: null,
       outReady: null,
       sideReady: null,
+      growth: instant ? GROW_TICKS : 0,
+      understretchId: null,
+      load: 0,
     };
     // cut the host: upstream keeps head, tail -> organ-in; downstream head
-    // -> out port, keeps tail
+    // -> out port, keeps tail. Unless the organ arrives instantly (preset
+    // building), the middle 5 cells survive as a doomed "understretch" —
+    // still visible beneath the growing organ until it covers them.
     const upCells = p.cells.slice(0, i - 2);
     const downCells = p.cells.slice(i + 3);
     w.veins.delete(p.id);
-    for (let j = i - 2; j <= i + 2; j++) if (p.hist[j]) w.histCount--;
+    if (instant) {
+      for (let j = i - 2; j <= i + 2; j++) if (p.hist[j]) w.histCount--;
+    } else {
+      const stretch: Vein = {
+        id: w.nextId++,
+        cells: p.cells.slice(i - 2, i + 3),
+        parcels: p.parcels.slice(i - 2, i + 3),
+        hist: p.hist.slice(i - 2, i + 3),
+        flow: p.flow.slice(i - 2, i + 3),
+        inc: p.inc.slice(i - 2, i + 3),
+        incTick: p.incTick.slice(i - 2, i + 3),
+        head: { type: 'open' },
+        tail: { type: 'open' },
+        probed: p.probed,
+      };
+      w.veins.set(stretch.id, stretch);
+      o.understretchId = stretch.id;
+    }
     if (upCells.length >= 2) {
       w.veins.set(w.nextId, {
         id: w.nextId++,
@@ -420,6 +621,8 @@ export function tryBud(w: World, cellKey: string): { ok: boolean; msg: string } 
         parcels: p.parcels.slice(0, i - 2),
         hist: p.hist.slice(0, i - 2),
         flow: p.flow.slice(0, i - 2),
+        inc: p.inc.slice(0, i - 2),
+        incTick: p.incTick.slice(0, i - 2),
         head: p.head,
         tail: { type: 'organ-in', organId: o.id },
         probed: p.probed,
@@ -432,6 +635,8 @@ export function tryBud(w: World, cellKey: string): { ok: boolean; msg: string } 
         parcels: p.parcels.slice(i + 3),
         hist: p.hist.slice(i + 3),
         flow: p.flow.slice(i + 3),
+        inc: p.inc.slice(i + 3),
+        incTick: p.incTick.slice(i + 3),
         head: { type: 'port', organId: o.id, port: 'out' },
         tail: p.tail,
         probed: p.probed,
@@ -439,7 +644,7 @@ export function tryBud(w: World, cellKey: string): { ok: boolean; msg: string } 
     }
     w.organs.set(o.id, o);
     reindex(w);
-    return { ok: true, msg: `Radical Filter grown (side port ${cw ? 'cw' : 'ccw'})` };
+    return { ok: true, msg: `something is budding here (side port ${cw ? 'cw' : 'ccw'})` };
   }
   return { ok: false, msg: 'bud failed: need 5 straight cells of vein centered here' };
 }
@@ -463,6 +668,8 @@ export function snapshotWorld(w: World): World {
           parcels: p.parcels.map(cloneParcel),
           hist: p.cells.map(() => null),
           flow: [...p.flow],
+          inc: [...p.inc],
+          incTick: [...p.incTick],
           probed: p.probed,
         } satisfies Vein,
       ]),

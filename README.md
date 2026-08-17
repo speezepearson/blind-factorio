@@ -59,13 +59,26 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
 - Vein endpoints attach: head to a **source**, a mid-vein **fork** (splits half of the
   host parcel), or an organ's **out/side port**; tail to a mid-vein **merge** (adds
   into the host parcel), an organ's **in** port, or nothing (vents).
-- **Organs** grow by *budding*: double-click a straight 5-cell stretch of vein; the
-  organ's 5×5 footprint replaces it, cutting the host vein into a feeder and a
-  continuation. One organ exists so far — the **radical filter** (free radicals out
-  the side port, composites out the main port). Budding is currently hard-coded; the
-  mixture-determined differentiation grammar is the next design milestone.
+- **Ghost veins & incarnation**: player-drawn veins start as ghosts — dashed routes
+  with no walls. They grow real ("incarnate") at 1 cell per 2 ticks, spreading from
+  every contact with the live network: a head on a source or grown organ port, a
+  fork/merge onto an incarnate cell, or a live vein's end junctioning onto them
+  mid-route. Unconnected ghosts stay ghosts. Ghost cells carry no fluid, exchange no
+  heat, and can't be budded on. Preset/imported "wild anatomy" is born incarnate.
+- **Nothing ever destroys fluid in transit.** A blocked outlet — a ghost cell ahead,
+  or a growing organ at the tail — *stalls* the column behind it (a traffic jam, not
+  a drain), so mass-balance reasoning always holds. See `using-my-initiative.md`.
+- **Organs** grow by *budding*: double-click a straight, incarnate 5-cell stretch;
+  the host vein is cut into a feeder and a continuation, and the organ swells over
+  GROW_TICKS (10) ticks — accepting and emitting nothing while it grows (the feeder
+  stalls, downstream drains). The stretch of host vein beneath it (the
+  "understretch") stays until growth completes, then is garbage-collected. One organ
+  exists so far — the **radical filter** (free radicals out the side port, composites
+  out the main port). Budding is hard-coded; the mixture-determined differentiation
+  grammar is the next design milestone.
 - Erasing cells removes them from every vein passing through, splitting survivors into
-  fragments (fluid rides along); organs touched by an erase die.
+  fragments (fluid rides along); organs touched by an erase die (an interrupted
+  organ's understretch survives, re-exposed).
 
 ## Two views, one world
 
@@ -82,7 +95,7 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
 |---|---|
 | `src/chem.ts` | The chemistry engine: radical table, species/channel derivation, quantized tau-leaped kinetics, integer heat, seeded RNG, and the color projection. Pure logic, generic over the radical set. |
 | `src/world.ts` | The world: veins, organs, sources, positional attachments, the tick (heat → reactions → advection → record), editing ops (commit/erase/bud), undo snapshots. |
-| `src/render.ts` | Canvas rendering; owns the player/god visibility split for overlays. |
+| `src/render.ts` | Canvas rendering — the flesh-cavity theme lives here: mottled breathing backdrop (with drips), membrane-walled veins with peristalsis and sub-tick fluid slide, smooth ghost-incarnation extrusion, wobbling organ growth, load-driven heartbeat. Owns the player/god visibility split. All ambience is deliberately dimmer and slower than the data channels (vein color/width). |
 | `src/Probes.tsx` | God-mode probe cards: recharts stacked-area composition + temperature line, fed by per-cell ring-buffer history. |
 | `src/serialize.ts` | World structure ↔ URL-safe deflated code (`rv` format v1); fluid/heat state intentionally not serialized — imports refill from sources. |
 | `src/presets.ts` | Built-in worlds (fuse & filter demo, fresh slate). |

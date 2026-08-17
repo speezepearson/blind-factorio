@@ -3,14 +3,16 @@
 import { BASE_URL, finish, launch, ok } from './helpers.mjs';
 
 const d = await launch();
-const { page, drawVein, dblClickCell, pause, worldInfo } = d;
+const { page, drawVein, dblClickCell, pause, ticks, worldInfo } = d;
 
 await page.selectOption('select', 'blank');
 await page.waitForTimeout(200);
 await pause();
 
 await drawVein([[1, 2], [8, 2], [8, 20], [30, 20]]);
+await ticks(110); // let the ghost incarnate — budding refuses ghost cells
 await dblClickCell(19, 20);
+await ticks(12); // organ grows in; its understretch is collected
 const before = await worldInfo();
 ok('built: vein + organ', before.veins.length >= 1 && before.organs.length === 1);
 

@@ -92,9 +92,10 @@ export async function launch(hash = '') {
             last: [p.cells[p.cells.length - 1].x, p.cells[p.cells.length - 1].y],
             totals,
             firstTotals,
+            incCount: p.inc.reduce((a, b) => a + b, 0),
           };
         }),
-        organs: [...w.organs.values()].map((o) => ({ cx: o.cx, cy: o.cy })),
+        organs: [...w.organs.values()].map((o) => ({ cx: o.cx, cy: o.cy, growth: o.growth })),
         maxTemp: Math.max(
           1,
           ...[...w.veins.values()].flatMap((p) =>

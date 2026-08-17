@@ -30,11 +30,13 @@ function buildDemo(chem: Chemistry): World {
   const w = makeWorld(chem);
   const R = chem.speciesIndex('R');
   const G = chem.speciesIndex('G');
+  // wild anatomy is born incarnate — only player-drawn veins start as ghosts
   const trunk = commitVein(
     w,
     pathThrough([[2, 2], [8, 2], [8, 14], [40, 14]]),
     { type: 'source', spIdx: R },
     { type: 'open' },
+    true,
   )!;
   // ends beside the trunk's x=8 column; the tail merges into cell (8,6)
   commitVein(
@@ -42,8 +44,9 @@ function buildDemo(chem: Chemistry): World {
     pathThrough([[2, 6], [7, 6]]),
     { type: 'source', spIdx: G },
     { type: 'merge', veinId: trunk.id, cellKey: '8,6' },
+    true,
   );
-  tryBud(w, '24,14');
+  tryBud(w, '24,14', { instant: true });
   return w;
 }
 
