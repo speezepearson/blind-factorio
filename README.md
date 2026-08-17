@@ -76,16 +76,24 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
   stays honest because every vent is a structural feature the player can point at;
   fluid never vanishes mid-vein (budding refuses stretches that would hide a
   junction — and thus a vent — under the organ body).
-- **Organs** grow by *budding*: double-click a straight, incarnate 5-cell stretch
-  (each cut end must leave a ≥2-cell fragment, or nothing with nothing attached,
-  and no other vein may junction onto the stretch); the host vein is cut into a feeder and a
-  continuation, and the organ swells over GROW_TICKS (10) ticks — swallowing its
-  feed and emitting nothing while it grows (downstream drains). The stretch of host
-  vein beneath it (the "understretch") stays until growth completes, then is
-  garbage-collected. One organ exists so far — the **radical filter** (free radicals
-  out the side port, composites out the main port); its name and side-port label
-  are god-only on the canvas. Budding is hard-coded; the mixture-determined
-  differentiation grammar is the next design milestone.
+- **Organs** grow by *budding*: double-click any incarnate vein cell. The organ's
+  5×5 footprint centers there and eats the contiguous in-footprint stretch of that
+  vein — bends and all. Requirements: the vein must flow in from outside the
+  footprint; downstream it must exit the footprint or terminate openly inside; no
+  other vein may junction onto the eaten stretch (that vent would hide under the
+  organ); each cut end must leave a ≥2-cell fragment or nothing-with-nothing-
+  attached. **Ports sit where the vein crossed the organ wall** (a vein ending
+  inside gets its out port relocated to a free wall cell; an exit through the entry
+  square shoves the out port over by one and grows a connecting stub); the side
+  port takes the wall cell farthest from both. Other stretches of the same vein
+  crossing the footprint are untouched. The organ swells over GROW_TICKS (10)
+  ticks — swallowing its feed and emitting nothing while it grows (downstream
+  drains); the eaten stretch (the "understretch") stays visible beneath it until
+  growth completes, then is garbage-collected. One organ exists so far — the
+  **radical filter** (free radicals out the side port, composites out the main
+  port); its name and side-port label are god-only on the canvas. Budding is
+  hard-coded; the mixture-determined differentiation grammar is the next design
+  milestone.
 - Erasing cells removes them from every vein passing through, splitting survivors into
   fragments (fluid rides along); organs touched by an erase die (an interrupted
   organ's understretch survives, re-exposed).

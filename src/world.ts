@@ -1,5 +1,5 @@
 import {
-  addInto, ambientLeak, cloneParcel, emptyParcel, exchangeHeat, radCount, reactParcel, rnd,
+  addInto, ambientLeak, cloneParcel, emptyParcel, exchangeHeat, radCount, reactParcel,
   sourceParcel, splitHalf, stochRound, tempOf, totalParticles,
   K_ALONG, K_CROSS, SCALE,
 } from './chem';
@@ -16,9 +16,10 @@ import type { Chemistry, Parcel } from './chem';
 //   tail:  open (vents) | merge (adds into a host vein's parcel)
 //        | organ-in (feeds an organ)
 //
-// Organs sit on 5×5 footprints, grown by budding on a straight stretch of
-// vein (the host vein is cut around them). One organ type exists so far —
-// the radical filter — with its behavior hard-coded in organProcess().
+// Organs sit on 5×5 footprints, grown by budding anywhere on a vein that
+// flows in from outside the footprint (the in-footprint stretch is eaten;
+// ports sit where the vein crossed the wall). One organ type exists so far
+// — the radical filter — with its behavior hard-coded in organProcess().
 
 export const COLS = 46;
 export const ROWS = 30;
@@ -502,52 +503,62 @@ export function eraseCells(w: World, keys: Set<string>): void {
 export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }): { ok: boolean; msg: string } {
   const segs = w.cellSegs.get(cellKey);
   if (!segs || segs.length === 0) return { ok: false, msg: 'no vein here' };
-  for (const { vein: p, idx: i } of segs) {
-    if (i < 2 || i > p.cells.length - 3) continue;
-    // Each cut end must leave either a proper (≥2-cell) fragment or
-    // nothing-with-nothing-attached: a 1-cell orphan would be silently
-    // dropped (destroying fluid, dangling attachments), and a 0-cell cut
-    // with a live attachment (a source head, a merge tail) would silently
-    // sever it.
-    const upLen = i - 2;
-    const downLen = p.cells.length - (i + 3);
-    if (upLen === 1 || downLen === 1) return { ok: false, msg: 'too close to the end of the vein' };
-    if ((upLen === 0 && p.head.type !== 'open') || (downLen === 0 && p.tail.type !== 'open')) {
-      return { ok: false, msg: 'too close to the end of the vein' };
+  let why = 'bud failed: needs a vein flowing through from outside';
+  for (const { vein: p, idx } of segs) {
+    const cx = p.cells[idx].x;
+    const cy = p.cells[idx].y;
+    if (cx - 2 < 0 || cy - 2 < 0 || cx + 2 >= COLS || cy + 2 >= ROWS) {
+      why = 'too close to the edge';
+      continue;
     }
-    if (!p.inc.slice(i - 2, i + 3).every((v) => v === 1)) {
-      return { ok: false, msg: 'the vein here is not grown in yet' };
+    // The organ eats the contiguous in-footprint stretch of vein around the
+    // clicked cell. No straightness requirement: the stretch may bend
+    // freely, and other stretches of the same vein crossing the footprint
+    // are untouched.
+    const inFoot = (c: VeinCell) => Math.abs(c.x - cx) <= 2 && Math.abs(c.y - cy) <= 2;
+    const n = p.cells.length;
+    let a = idx;
+    while (a - 1 >= 0 && inFoot(p.cells[a - 1])) a--;
+    let b = idx;
+    while (b + 1 < n && inFoot(p.cells[b + 1])) b++;
+    // (a) upstream must flow in from outside the footprint
+    if (a === 0) {
+      why = 'the vein must flow in from outside';
+      continue;
+    }
+    // (b) downstream must exit the footprint, or terminate openly inside it
+    if (b === n - 1 && p.tail.type !== 'open') {
+      why = p.tail.type === 'merge' ? "there's a junction in the way" : 'too close to another organ';
+      continue;
+    }
+    // never strand a 1-cell fragment (veins are always >= 2 cells)
+    if (a === 1 || n - 1 - b === 1) {
+      why = 'too close to the end of the vein';
+      continue;
+    }
+    if (!p.inc.slice(a, b + 1).every((v) => v === 1)) {
+      why = 'the vein here is not grown in yet';
+      continue;
     }
     // Refuse if any OTHER vein junctions onto the doomed stretch: when the
     // understretch is collected, that fork/merge would dangle and become a
     // permanent vent hidden under the organ body — exactly the invisible
     // sink the venting model forbids.
-    const doomedKeys = new Set(p.cells.slice(i - 2, i + 3).map((c) => c.k));
+    const doomedKeys = new Set(p.cells.slice(a, b + 1).map((c) => c.k));
+    let junction = false;
     for (const q of w.veins.values()) {
       if (q.id === p.id) continue;
-      if (q.head.type === 'fork' && doomedKeys.has(q.head.cellKey)) {
-        return { ok: false, msg: "there's a junction in the way" };
-      }
-      if (q.tail.type === 'merge' && doomedKeys.has(q.tail.cellKey)) {
-        return { ok: false, msg: "there's a junction in the way" };
+      if (
+        (q.head.type === 'fork' && doomedKeys.has(q.head.cellKey)) ||
+        (q.tail.type === 'merge' && doomedKeys.has(q.tail.cellKey))
+      ) {
+        junction = true;
+        break;
       }
     }
-    const run = p.cells.slice(i - 2, i + 3);
-    const horiz = run.every((c) => c.y === run[0].y);
-    const vert = run.every((c) => c.x === run[0].x);
-    if (!horiz && !vert) continue;
-    const mono = run.every(
-      (c, j) =>
-        j === 0 ||
-        (horiz
-          ? Math.abs(c.x - run[j - 1].x) === 1 && c.y === run[j - 1].y
-          : Math.abs(c.y - run[j - 1].y) === 1 && c.x === run[j - 1].x),
-    );
-    if (!mono) continue;
-    const cx = p.cells[i].x;
-    const cy = p.cells[i].y;
-    if (cx - 2 < 0 || cy - 2 < 0 || cx + 2 >= COLS || cy + 2 >= ROWS) {
-      return { ok: false, msg: 'too close to the edge' };
+    if (junction) {
+      why = "there's a junction in the way";
+      continue;
     }
     const foot = new Set<string>();
     let blocked = false;
@@ -558,21 +569,58 @@ export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }):
         foot.add(k2);
       }
     }
-    if (blocked) return { ok: false, msg: 'footprint blocked' };
-    const din = { x: p.cells[i].x - p.cells[i - 1].x, y: p.cells[i].y - p.cells[i - 1].y };
-    const cw = rnd() < 0.5;
-    const sideDir = cw ? { x: -din.y, y: din.x } : { x: din.y, y: -din.x };
+    if (blocked) {
+      why = 'footprint blocked';
+      continue;
+    }
+
+    // ---- placement: ports sit where the vein crossed the organ wall ----
     const mk = (x: number, y: number): VeinCell => ({ x, y, k: key(x, y) });
+    const ring: VeinCell[] = [];
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dy = -2; dy <= 2; dy++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) === 2) ring.push(mk(cx + dx, cy + dy));
+      }
+    }
+    const manh = (u: VeinCell, v: VeinCell) => Math.abs(u.x - v.x) + Math.abs(u.y - v.y);
+    // ring cell farthest (min-distance) from the cells to avoid
+    const farthestRing = (avoid: VeinCell[]) =>
+      ring.reduce((best, c) => {
+        const d = Math.min(...avoid.map((v) => manh(c, v)));
+        const bd = Math.min(...avoid.map((v) => manh(best, v)));
+        return d > bd ? c : best;
+      });
+    const portIn = mk(p.cells[a].x, p.cells[a].y);
+    let portOut: VeinCell;
+    const downPrepend: VeinCell[] = [];
+    if (b < n - 1) {
+      const natural = p.cells[b];
+      if (natural.k !== portIn.k) {
+        portOut = mk(natural.x, natural.y);
+      } else {
+        // the vein exits through its own entry square: shove the out port
+        // one over and grow a stub of vein so the downstream tail still
+        // leaves from its port
+        const alt = ring.find((c) => manh(c, natural) === 1 && c.k !== portIn.k) ?? farthestRing([portIn]);
+        portOut = alt;
+        downPrepend.push(mk(alt.x, alt.y), mk(natural.x, natural.y));
+      }
+    } else {
+      // the vein terminates inside: the out port goes wherever there's room
+      portOut = farthestRing([portIn]);
+    }
+    const portSide = farthestRing([portIn, portOut]);
+
     const instant = opts?.instant ?? false;
     const o: Organ = {
       id: w.nextId++,
       cx,
       cy,
       footprint: foot,
-      portIn: mk(cx - din.x * 2, cy - din.y * 2),
-      portOut: mk(cx + din.x * 2, cy + din.y * 2),
-      portSide: mk(cx + sideDir.x * 2, cy + sideDir.y * 2),
-      sideCW: cw,
+      portIn,
+      portOut,
+      portSide,
+      sideCW: false,
       inAccum: null,
       outReady: null,
       sideReady: null,
@@ -582,22 +630,22 @@ export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }):
     };
     // cut the host: upstream keeps head, tail -> organ-in; downstream head
     // -> out port, keeps tail. Unless the organ arrives instantly (preset
-    // building), the middle 5 cells survive as a doomed "understretch" —
+    // building), the eaten stretch survives as a doomed "understretch" —
     // still visible beneath the growing organ until it covers them.
-    const upCells = p.cells.slice(0, i - 2);
-    const downCells = p.cells.slice(i + 3);
+    const upCells = p.cells.slice(0, a);
+    const downCells = [...downPrepend, ...p.cells.slice(b + 1)];
     w.veins.delete(p.id);
     if (instant) {
-      for (let j = i - 2; j <= i + 2; j++) if (p.hist[j]) w.histCount--;
+      for (let j = a; j <= b; j++) if (p.hist[j]) w.histCount--;
     } else {
       const stretch: Vein = {
         id: w.nextId++,
-        cells: p.cells.slice(i - 2, i + 3),
-        parcels: p.parcels.slice(i - 2, i + 3),
-        hist: p.hist.slice(i - 2, i + 3),
-        flow: p.flow.slice(i - 2, i + 3),
-        inc: p.inc.slice(i - 2, i + 3),
-        incTick: p.incTick.slice(i - 2, i + 3),
+        cells: p.cells.slice(a, b + 1),
+        parcels: p.parcels.slice(a, b + 1),
+        hist: p.hist.slice(a, b + 1),
+        flow: p.flow.slice(a, b + 1),
+        inc: p.inc.slice(a, b + 1),
+        incTick: p.incTick.slice(a, b + 1),
         head: { type: 'open' },
         tail: { type: 'open' },
         probed: p.probed,
@@ -609,11 +657,11 @@ export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }):
       w.veins.set(w.nextId, {
         id: w.nextId++,
         cells: upCells,
-        parcels: p.parcels.slice(0, i - 2),
-        hist: p.hist.slice(0, i - 2),
-        flow: p.flow.slice(0, i - 2),
-        inc: p.inc.slice(0, i - 2),
-        incTick: p.incTick.slice(0, i - 2),
+        parcels: p.parcels.slice(0, a),
+        hist: p.hist.slice(0, a),
+        flow: p.flow.slice(0, a),
+        inc: p.inc.slice(0, a),
+        incTick: p.incTick.slice(0, a),
         head: p.head,
         tail: { type: 'organ-in', organId: o.id },
         probed: p.probed,
@@ -623,11 +671,11 @@ export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }):
       w.veins.set(w.nextId, {
         id: w.nextId++,
         cells: downCells,
-        parcels: p.parcels.slice(i + 3),
-        hist: p.hist.slice(i + 3),
-        flow: p.flow.slice(i + 3),
-        inc: p.inc.slice(i + 3),
-        incTick: p.incTick.slice(i + 3),
+        parcels: [...downPrepend.map(() => emptyParcel(w.chem)), ...p.parcels.slice(b + 1)],
+        hist: [...downPrepend.map(() => null), ...p.hist.slice(b + 1)],
+        flow: [...downPrepend.map(() => 0), ...p.flow.slice(b + 1)],
+        inc: [...downPrepend.map(() => 1), ...p.inc.slice(b + 1)],
+        incTick: [...downPrepend.map(() => w.tick), ...p.incTick.slice(b + 1)],
         head: { type: 'port', organId: o.id, port: 'out' },
         tail: p.tail,
         probed: p.probed,
@@ -635,9 +683,9 @@ export function tryBud(w: World, cellKey: string, opts?: { instant?: boolean }):
     }
     w.organs.set(o.id, o);
     reindex(w);
-    return { ok: true, msg: `something is budding here (side port ${cw ? 'cw' : 'ccw'})` };
+    return { ok: true, msg: 'something is budding here' };
   }
-  return { ok: false, msg: 'bud failed: need 5 straight cells of vein centered here' };
+  return { ok: false, msg: why };
 }
 
 // ---------------- undo snapshots ----------------

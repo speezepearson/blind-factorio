@@ -451,7 +451,6 @@ export default function App() {
           Redo
         </button>
         <span className="spacer" />
-        {flash && <span className="flash">{flash}</span>}
         <label className="checkbox" title="Toggle with G">
           <input type="checkbox" checked={godMode} onChange={(e) => setGodModeTo(e.target.checked)} />
           God mode
@@ -497,7 +496,10 @@ export default function App() {
         </div>
       )}
       <div className="main">
-        <div>
+        <div className="stage">
+          {/* the flash floats over the canvas so it never reflows the layout
+              (a toolbar reflow would move the canvas mid-gesture) */}
+          {flash && <span className="flash">{flash}</span>}
           <canvas
             ref={canvasRef}
             width={COLS * CELL}
