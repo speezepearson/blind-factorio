@@ -1,6 +1,8 @@
 import { fluidColor, speciesColor, tempOf, T_AMB, SCALE } from './chem';
-import { CELL, COLS, GROW_TICKS, INC_PERIOD, ROWS, organGrown, parseKey } from './world';
+import { GROW_TICKS, INC_PERIOD, organGrown } from './world';
 import type { Vein, World } from './world';
+import { PORT_R, SRC_R, WORLD_H, WORLD_W, posAt } from './geom';
+import type { Pt } from './geom';
 
 // The view layer: a torn-open cavity in some vast biological machine. The
 // player's channels are vein color (composition ratios), width (amount),
@@ -11,8 +13,8 @@ import type { Vein, World } from './world';
 export type Tool = 'draw' | 'erase' | 'probe';
 
 export type DragState =
-  | { kind: 'draw'; cells: Array<{ x: number; y: number; k: string }>; endOrganIn?: number }
-  | { kind: 'erase'; keys: Set<string> }
+  | { kind: 'draw'; pts: Pt[]; endOrganIn?: number }
+  | { kind: 'erase'; pts: Pt[] }
   | null;
 
 export interface ViewState {
@@ -20,13 +22,10 @@ export interface ViewState {
   godMode: boolean;
   tempOverlay: boolean;
   drag: DragState;
-  probes: Array<{ cellKey: string }>;
+  probes: Array<{ x: number; y: number }>;
   phase: number; // continuous tick: world.tick + sub-tick fraction
   timeMs: number; // wall clock, for sim-speed-independent ambience
 }
-
-const laneOffsets: Array<[number, number]> = [[0, 0], [-5, -5], [5, 5], [-5, 5], [5, -5]];
-const laneOff = (id: number) => laneOffsets[id % laneOffsets.length];
 
 // ---- the cavity backdrop -------------------------------------------------
 // A blurry mottle of dark reds and browns, breathing slowly, with the
@@ -76,7 +75,6 @@ function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number, t: 
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(bgBase, 0, 0, W, H);
 
-  // slow breathing: a few broad soft patches swelling and drifting
   const ts = t / 1000;
   for (let k = 0; k < 4; k++) {
     const cx = W * (0.18 + 0.22 * k) + 26 * Math.sin(ts * 0.11 + k * 2.1);
@@ -91,7 +89,6 @@ function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number, t: 
     ctx.fill();
   }
 
-  // rare slow drips crawling down the cavity wall
   if (t - lastDripSpawn > 6500 && drips.length < 3 && Math.random() < 0.02) {
     lastDripSpawn = t;
     drips.push({ x: Math.random() * W, y: -30, len: 26 + Math.random() * 40, speed: 9 + Math.random() * 14, alpha: 0.05 + Math.random() * 0.05 });
@@ -119,7 +116,6 @@ function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number, t: 
     ctx.fill();
   }
 
-  // vignette: the torn-open edges fall away into dark
   const v = ctx.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, H * 0.95);
   v.addColorStop(0, 'rgba(0,0,0,0)');
   v.addColorStop(1, 'rgba(0,0,0,0.42)');
@@ -129,19 +125,9 @@ function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number, t: 
 
 // ---- veins ---------------------------------------------------------------
 
-// fractional position along a vein's polyline (t in cell-index units)
-function posAt(pts: Array<[number, number]>, t: number): [number, number] {
-  const n = pts.length;
-  if (t <= 0) return pts[0];
-  if (t >= n - 1) return pts[n - 1];
-  const i = Math.floor(t);
-  const f = t - i;
-  return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * f, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * f];
-}
-
 const widthOf = (f: number) => Math.min(14, 1.6 + 6.8 * Math.sqrt(Math.max(0, f) / SCALE));
 
-function strokeSeg(ctx: CanvasRenderingContext2D, pts: Array<[number, number]>, t0: number, t1: number, width: number, style: string): void {
+function strokeSeg(ctx: CanvasRenderingContext2D, pts: Pt[], t0: number, t1: number, width: number, style: string): void {
   if (t1 - t0 < 1e-4) return;
   ctx.strokeStyle = style;
   ctx.lineWidth = width;
@@ -150,8 +136,8 @@ function strokeSeg(ctx: CanvasRenderingContext2D, pts: Array<[number, number]>, 
   ctx.beginPath();
   let [px, py] = posAt(pts, t0);
   ctx.moveTo(px, py);
-  // visit every interior cell center so the stroke follows corners
-  // instead of chording across them
+  // visit every interior node so the stroke follows the curve instead of
+  // chording across it
   for (let t = Math.floor(t0) + 1; t < t1; t++) {
     if (t > t0) {
       [px, py] = posAt(pts, t);
@@ -165,12 +151,8 @@ function strokeSeg(ctx: CanvasRenderingContext2D, pts: Array<[number, number]>, 
 
 function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein): void {
   const chem = view.world.chem;
-  const off = laneOff(p.id);
-  const pts: Array<[number, number]> = p.cells.map((c) => [
-    c.x * CELL + CELL / 2 + off[0],
-    c.y * CELL + CELL / 2 + off[1],
-  ]);
-  const n = p.cells.length;
+  const pts = p.pts;
+  const n = pts.length;
   const phase = view.phase;
   const frac = Math.max(0, Math.min(1, phase - view.world.tick));
 
@@ -190,20 +172,19 @@ function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein): void
   ctx.setLineDash([]);
 
   // 2) membrane wall over the incarnate portion, with freshly incarnated
-  // cells extruding smoothly out of their older neighbor
+  // nodes extruding smoothly out of their older neighbor
   const growF = (i: number) => {
     if (!p.inc[i]) return 0;
     if (p.incTick[i] <= 0) return 1;
     // incTick is recorded before the tick counter advances, so the first
     // rendered frame sees phase - incTick ≈ 1; the -1 makes extrusion start
-    // from ~0 and finish just as the next cell begins its own
+    // from ~0 and finish just as the next node begins its own
     return Math.max(0.03, Math.min(1, (phase - p.incTick[i] - 1) / INC_PERIOD));
   };
   const wallW = (i: number) => Math.max(4.5, widthOf(p.flow[i]) * wave(i, p.flow[i]) + 3);
   for (let i = 0; i < n; i++) {
     if (!p.inc[i]) continue;
     const g = growF(i);
-    // half-segments toward each incarnate/edge neighbor, scaled by growth
     const wl = 'rgba(226,200,182,0.5)';
     if (i > 0 && p.inc[i - 1] && growF(i - 1) >= g) strokeSeg(ctx, pts, i - g * 0.5, i, wallW(i), wl);
     else if (i === 0 || !p.inc[i - 1]) strokeSeg(ctx, pts, i - 0.001, i, wallW(i), wl);
@@ -220,8 +201,8 @@ function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein): void
     if ((i === 0 || !p.inc[i - 1]) && (i === n - 1 || !p.inc[i + 1])) strokeSeg(ctx, pts, i - 0.001, i + 0.001, lw, '#1b1214');
   }
 
-  // 3) fluid: each parcel drawn as a sliding one-cell segment, always
-  // interpolating from the cell behind (everything advances every tick)
+  // 3) fluid: each parcel drawn as a sliding one-node segment, always
+  // interpolating from the node behind (everything advances every tick)
   for (let i = 0; i < n; i++) {
     if (!p.inc[i]) continue;
     const color = fluidColor(chem, p.parcels[i].c);
@@ -265,36 +246,38 @@ function heartbeat(t: number): number {
   return thump(0.07, 0.045) + 0.45 * thump(0.24, 0.055);
 }
 
+// a wobbling organic disc outline
+function blobPath(ctx: CanvasRenderingContext2D, c: Pt, R: number, t: number, wobble: number): void {
+  ctx.beginPath();
+  const N = 26;
+  for (let k = 0; k <= N; k++) {
+    const th = (k / N) * Math.PI * 2;
+    const r =
+      R *
+      (1 +
+        wobble * 0.14 * Math.sin(3 * th + t * 2.4) +
+        wobble * 0.1 * Math.sin(5 * th - t * 1.7) +
+        wobble * 0.05 * Math.sin(8 * th + t * 3.9));
+    const x = c[0] + r * Math.cos(th);
+    const y = c[1] + r * 0.94 * Math.sin(th);
+    if (k === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+}
+
 function drawOrgans(ctx: CanvasRenderingContext2D, view: ViewState): void {
   const w = view.world;
   const phase = view.phase;
+  const t = view.timeMs / 1000;
   for (const o of w.organs.values()) {
-    const cx = o.cx * CELL + CELL / 2;
-    const cy = o.cy * CELL + CELL / 2;
     const grown = organGrown(o);
     const g = grown ? 1 : Math.min(1, (o.growth + Math.max(0, Math.min(1, phase - w.tick))) / GROW_TICKS);
 
     if (!grown) {
       // a wobbling blob swelling over the vein beneath it
       const ease = g * g * (3 - 2 * g);
-      const R = 2.5 * CELL * (0.22 + 0.78 * ease);
-      const t = view.timeMs / 1000;
-      ctx.beginPath();
-      const N = 26;
-      for (let k = 0; k <= N; k++) {
-        const th = (k / N) * Math.PI * 2;
-        const r =
-          R *
-          (1 +
-            0.14 * (1 - 0.5 * ease) * Math.sin(3 * th + t * 2.4) +
-            0.1 * (1 - 0.5 * ease) * Math.sin(5 * th - t * 1.7) +
-            0.05 * Math.sin(8 * th + t * 3.9));
-        const x = cx + r * Math.cos(th);
-        const y = cy + r * 0.92 * Math.sin(th);
-        if (k === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.closePath();
+      blobPath(ctx, o.c, o.r * (0.22 + 0.78 * ease), t, 1 - 0.5 * ease);
       ctx.fillStyle = `rgba(210,185,150,${0.25 + 0.65 * ease})`;
       ctx.fill();
       ctx.strokeStyle = `rgba(122,111,88,${0.4 + 0.6 * ease})`;
@@ -303,22 +286,18 @@ function drawOrgans(ctx: CanvasRenderingContext2D, view: ViewState): void {
       continue;
     }
 
-    // grown: parchment body with a load-driven heartbeat
+    // grown: a gently breathing membrane disc with a load-driven heartbeat
     const amp = 0.045 * Math.min(1, o.load / (SCALE * 0.3));
     const beat = 1 + amp * heartbeat(phase / 8 + o.id * 0.37);
-    const x = (o.cx - 2) * CELL;
-    const y = (o.cy - 2) * CELL;
-    const wpx = 5 * CELL;
     ctx.save();
-    ctx.translate(cx, cy);
+    ctx.translate(o.c[0], o.c[1]);
     ctx.scale(beat, beat);
-    ctx.translate(-cx, -cy);
+    ctx.translate(-o.c[0], -o.c[1]);
+    blobPath(ctx, o.c, o.r, t * 0.35, 0.28);
     ctx.fillStyle = '#e8ddc8';
+    ctx.fill();
     ctx.strokeStyle = '#7a6f58';
     ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect(x + 2, y + 2, wpx - 4, wpx - 4, 12);
-    ctx.fill();
     ctx.stroke();
     // the organ's identity is god-only: the player was promised "what it
     // does is yours to find out"
@@ -327,24 +306,28 @@ function drawOrgans(ctx: CanvasRenderingContext2D, view: ViewState): void {
       ctx.font = '700 10px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('RADICAL', cx, o.cy * CELL + 2);
-      ctx.fillText('FILTER', cx, o.cy * CELL + 13);
+      ctx.fillText('RADICAL', o.c[0], o.c[1] - 5);
+      ctx.fillText('FILTER', o.c[0], o.c[1] + 6);
     }
     ctx.restore();
 
-    // ports sit on the grid, unscaled (veins attach to them). in/out are
-    // honest anatomy; the side port's function stays unlabeled for players.
-    const port = (pt: { x: number; y: number }, color: string, label: string | null) => {
+    // ports sit on the membrane, unscaled (veins attach to them). in/out
+    // are honest anatomy; the side port's function stays unlabeled for
+    // players.
+    const port = (pt: Pt, color: string, label: string | null) => {
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.roundRect(pt.x * CELL + 3, pt.y * CELL + 3, CELL - 6, CELL - 6, 4);
+      ctx.arc(pt[0], pt[1], PORT_R * 0.85, 0, Math.PI * 2);
       ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
       if (label) {
         ctx.fillStyle = '#fff';
-        ctx.font = '700 9px sans-serif';
+        ctx.font = '700 8px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(label, pt.x * CELL + CELL / 2, pt.y * CELL + CELL / 2 + 0.5);
+        ctx.fillText(label, pt[0], pt[1] + 0.5);
       }
     };
     port(o.portIn, '#4a7a52', 'in');
@@ -360,16 +343,13 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
   if (!ctx) return;
   const w = view.world;
   const chem = w.chem;
-  const W = COLS * CELL;
-  const H = ROWS * CELL;
 
-  drawBackground(ctx, W, H, view.timeMs);
+  drawBackground(ctx, WORLD_W, WORLD_H, view.timeMs);
 
   // temperature underlay (god only): red-hot / blue-cold halos
   if (view.godMode && view.tempOverlay) {
     for (const p of w.veins.values()) {
-      const off = laneOff(p.id);
-      for (let i = 0; i < p.cells.length; i++) {
+      for (let i = 0; i < p.pts.length; i++) {
         if (!p.inc[i]) continue;
         const T = tempOf(chem, p.parcels[i]);
         const d = T - T_AMB;
@@ -378,15 +358,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
         ctx.strokeStyle = d > 0 ? `rgba(255,90,50,${a})` : `rgba(70,140,255,${a})`;
         ctx.lineWidth = widthOf(p.flow[i]) + 9;
         ctx.lineCap = 'round';
-        ctx.beginPath();
-        const c0 = p.cells[Math.max(0, i - 1)];
-        const c1 = p.cells[i];
-        ctx.moveTo(
-          (c0.x + c1.x) * 0.5 * CELL + CELL / 2 + off[0],
-          (c0.y + c1.y) * 0.5 * CELL + CELL / 2 + off[1],
-        );
-        ctx.lineTo(c1.x * CELL + CELL / 2 + off[0], c1.y * CELL + CELL / 2 + off[1]);
-        ctx.stroke();
+        strokeSeg(ctx, p.pts, Math.max(0, i - 0.5), Math.min(p.pts.length - 1, i + 0.5), widthOf(p.flow[i]) + 9, ctx.strokeStyle as string);
       }
     }
   }
@@ -395,25 +367,23 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
 
   // sources: wellheads in the cavity wall, painted with their fluid's light
   for (const s of w.sources) {
-    const x = s.x * CELL;
-    const y = s.y * CELL;
     ctx.fillStyle = 'rgba(226,200,182,0.35)';
     ctx.beginPath();
-    ctx.arc(x + CELL / 2, y + CELL / 2, CELL * 0.62, 0, Math.PI * 2);
+    ctx.arc(s.pt[0], s.pt[1], SRC_R * 1.45, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = speciesColor(chem, s.spIdx);
     ctx.beginPath();
-    ctx.roundRect(x + 2, y + 2, CELL - 4, CELL - 4, 7);
+    ctx.arc(s.pt[0], s.pt[1], SRC_R, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = 'rgba(0,0,0,.45)';
     ctx.lineWidth = 1.5;
     ctx.stroke();
     if (view.godMode) {
       ctx.fillStyle = '#fff';
-      ctx.font = '700 8px sans-serif';
+      ctx.font = '700 9px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(s.name, x + CELL / 2, y + CELL / 2 + 0.5);
+      ctx.fillText(s.name, s.pt[0], s.pt[1] + 0.5);
     }
   }
 
@@ -421,43 +391,42 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
 
   // drag previews
   const dr = view.drag;
-  if (dr?.kind === 'draw' && dr.cells.length) {
+  if (dr?.kind === 'draw' && dr.pts.length) {
     ctx.strokeStyle = 'rgba(235,245,250,0.5)';
     ctx.lineWidth = 6;
     ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.setLineDash([2, 6]);
     ctx.beginPath();
-    dr.cells.forEach((c, i) => {
-      const x = c.x * CELL + CELL / 2;
-      const y = c.y * CELL + CELL / 2;
-      if (i) ctx.lineTo(x, y);
-      else ctx.moveTo(x, y);
+    dr.pts.forEach((pt, i) => {
+      if (i) ctx.lineTo(pt[0], pt[1]);
+      else ctx.moveTo(pt[0], pt[1]);
     });
     ctx.stroke();
     ctx.setLineDash([]);
   }
-  if (dr?.kind === 'erase' && dr.keys.size) {
-    ctx.fillStyle = 'rgba(220,80,60,0.32)';
-    for (const k of dr.keys) {
-      const [x, y] = parseKey(k);
-      ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+  if (dr?.kind === 'erase' && dr.pts.length) {
+    ctx.fillStyle = 'rgba(220,80,60,0.28)';
+    for (const pt of dr.pts) {
+      ctx.beginPath();
+      ctx.arc(pt[0], pt[1], 14, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
   // probe markers (god only, like the probes themselves)
   if (view.godMode) {
     view.probes.forEach((pr, i) => {
-      const [x, y] = parseKey(pr.cellKey);
       ctx.strokeStyle = '#f0e8e0';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(x * CELL + CELL / 2, y * CELL + CELL / 2, CELL * 0.55, 0, Math.PI * 2);
+      ctx.arc(pr.x, pr.y, 11, 0, Math.PI * 2);
       ctx.stroke();
       ctx.fillStyle = '#f0e8e0';
       ctx.font = '700 10px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(String(i + 1), x * CELL + CELL / 2 - CELL * 0.62, y * CELL + CELL / 2 - CELL * 0.55);
+      ctx.fillText(String(i + 1), pr.x - 13, pr.y - 12);
     });
   }
 }

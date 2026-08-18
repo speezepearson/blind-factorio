@@ -2,13 +2,16 @@ import { chromium } from 'playwright';
 
 // Shared harness for the Veins e2e suites. Each test is standalone
 // (`node e2e/<name>.mjs`) against a dev server on 5173 (E2E_URL to
-// override). The dev build exposes `window.__veins` — {world(), chem,
-// tick(), tempOf(parcel)} — which the suites use to fast-forward the sim
-// deterministically and to read world state (including temperature via the
-// real formula) that the player-facing UI deliberately hides.
+// override). Coordinates are WORLD PIXELS (966×630 canvas, continuous —
+// there is no grid). The dev build exposes `window.__veins` — {world(),
+// chem, tick(), tempOf(parcel), resolveAttach(att)} — which the suites use
+// to fast-forward the sim deterministically and to read hidden state
+// through the real physics formulas.
+//
+// Sources sit at (26, 42 + 72·spIdx): R (26,42), G (26,114), B (26,186)…
 
-export const COLS = 46;
-export const ROWS = 30;
+export const WORLD_W = 966;
+export const WORLD_H = 630;
 export const BASE_URL = process.env.E2E_URL ?? 'http://localhost:5173/';
 
 let failures = 0;
@@ -33,28 +36,31 @@ export async function launch(hash = '') {
   await page.waitForTimeout(800);
 
   const canvas = page.locator('canvas');
-  const at = async (cx, cy) => {
+  const at = async (x, y) => {
     const box = await canvas.boundingBox();
-    return {
-      x: box.x + ((cx + 0.5) / COLS) * box.width,
-      y: box.y + ((cy + 0.5) / ROWS) * box.height,
-    };
+    return { x: box.x + (x / WORLD_W) * box.width, y: box.y + (y / WORLD_H) * box.height };
   };
-  const clickCell = async (cx, cy) => {
-    const p = await at(cx, cy);
+  const clickPt = async (x, y) => {
+    const p = await at(x, y);
     await page.mouse.click(p.x, p.y);
   };
-  const dblClickCell = async (cx, cy) => {
-    const p = await at(cx, cy);
+  const dblClickPt = async (x, y) => {
+    const p = await at(x, y);
     await page.mouse.dblclick(p.x, p.y);
   };
+  const rightClickPt = async (x, y) => {
+    const p = await at(x, y);
+    await page.mouse.click(p.x, p.y, { button: 'right' });
+  };
+  // freehand drag through waypoints (Playwright interpolates the steps, so
+  // the pen visits plenty of intermediate points)
   const drawVein = async (waypoints) => {
     const p0 = await at(...waypoints[0]);
     await page.mouse.move(p0.x, p0.y);
     await page.mouse.down();
     for (const wp of waypoints.slice(1)) {
       const p = await at(...wp);
-      await page.mouse.move(p.x, p.y, { steps: 6 });
+      await page.mouse.move(p.x, p.y, { steps: 12 });
     }
     await page.mouse.up();
   };
@@ -86,17 +92,20 @@ export async function launch(hash = '') {
           }
           return {
             id: p.id,
-            len: p.cells.length,
+            n: p.pts.length,
             head: p.head.type,
             tail: p.tail.type,
-            first: [p.cells[0].x, p.cells[0].y],
-            last: [p.cells[p.cells.length - 1].x, p.cells[p.cells.length - 1].y],
+            first: p.pts[0],
+            last: p.pts[p.pts.length - 1],
             totals,
             firstTotals,
             incCount: p.inc.reduce((a, b) => a + b, 0),
           };
         }),
-        organs: [...w.organs.values()].map((o) => ({ cx: o.cx, cy: o.cy, growth: o.growth })),
+        organs: [...w.organs.values()].map((o) => ({
+          cx: o.c[0], cy: o.c[1], r: o.r, growth: o.growth, load: o.load,
+          portIn: o.portIn, portOut: o.portOut, portSide: o.portSide,
+        })),
         maxTemp: Math.max(
           1,
           ...[...w.veins.values()].flatMap((p) => p.parcels.map((pc) => window.__veins.tempOf(pc))),
@@ -104,7 +113,7 @@ export async function launch(hash = '') {
       };
     });
 
-  return { browser, page, errors, canvas, at, clickCell, dblClickCell, drawVein, pause, ticks, worldInfo };
+  return { browser, page, errors, canvas, at, clickPt, dblClickPt, rightClickPt, drawVein, pause, ticks, worldInfo };
 }
 
 export async function finish({ browser, errors }) {

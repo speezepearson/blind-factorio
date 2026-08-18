@@ -15,7 +15,8 @@ export interface GraphData {
 export interface Probe {
   id: number;
   veinId: number;
-  cellKey: string;
+  x: number; // anchor point, resolved to the nearest node of the vein
+  y: number;
   label: string;
   frozen?: GraphData;
   lastData?: GraphData;
@@ -50,7 +51,7 @@ export function ProbePanel(props: {
     const nsp = w.chem.nsp;
     return probes.map((pr) => {
       if (pr.frozen) return pr.frozen;
-      const seg = resolveAttach(w, { veinId: pr.veinId, cellKey: pr.cellKey });
+      const seg = resolveAttach(w, { veinId: pr.veinId, at: [pr.x, pr.y] });
       if (!seg) {
         pr.frozen = pr.lastData ?? { rows: [], dead: true };
         return pr.frozen;
@@ -89,7 +90,7 @@ export function ProbePanel(props: {
       </div>
       {probes.length === 0 && (
         <div style={{ fontSize: 12, color: '#8d7f84', padding: 10, background: '#211b1e', border: '1px dashed #443a3c', borderRadius: 8 }}>
-          right-click a vein cell (or use the probe tool) to chart its composition &amp; temperature here
+          right-click a vein (or use the probe tool) to chart its composition &amp; temperature here
         </div>
       )}
       {probes.map((pr, i) => {

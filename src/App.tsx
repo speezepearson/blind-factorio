@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_RADICALS, buildChemistry, tempOf } from './chem';
 import type { Parcel } from './chem';
 import {
-  CELL, COLS, ROWS, doTick, ensureHist, eraseCells, key, snapshotWorld, tryBud, commitVein,
+  doTick, ensureHist, eraseNear, organAt, snapshotWorld, sourceAt, tryBud, commitVein, resolveAttach,
 } from './world';
 import type { Head, Tail, World } from './world';
+import { R_SNAP, WORLD_H, WORLD_W, dist, resample, smooth } from './geom';
+import type { Pt } from './geom';
 import { drawWorld } from './render';
 import type { DragState, Tool } from './render';
 import { worldFromCode, worldToCode } from './serialize';
@@ -48,6 +50,7 @@ export default function App() {
   const probesRef = useRef(probes);
   probesRef.current = probes;
   const dragRef = useRef<DragState>(null);
+  const dragHeadRef = useRef<Head>({ type: 'open' });
   const nextProbeId = useRef(1);
 
   const flashMsg = (msg: string) => {
@@ -56,8 +59,6 @@ export default function App() {
   };
 
   // ---- undo/redo: whole-world snapshots per mutating gesture ----
-  // (Probe history is excluded from snapshots and regrows; stickiness is
-  // chemistry, not world, and is deliberately not undoable.)
 
   const undoRef = useRef<World[]>([]);
   const redoRef = useRef<World[]>([]);
@@ -154,60 +155,79 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- mouse: draw / erase / probe / bud ----
+  // ---- mouse: freehand draw / erase brush / probe / bud ----
 
-  const cellAt = (e: { clientX: number; clientY: number }) => {
+  const ptAt = (e: { clientX: number; clientY: number }): Pt | null => {
     const cv = canvasRef.current;
     if (!cv) return null;
     const r = cv.getBoundingClientRect();
-    const x = Math.floor(((e.clientX - r.left) / r.width) * COLS);
-    const y = Math.floor(((e.clientY - r.top) / r.height) * ROWS);
-    if (x < 0 || y < 0 || x >= COLS || y >= ROWS) return null;
-    return { x, y, k: key(x, y) };
+    const x = ((e.clientX - r.left) / r.width) * WORLD_W;
+    const y = ((e.clientY - r.top) / r.height) * WORLD_H;
+    if (x < 0 || y < 0 || x >= WORLD_W || y >= WORLD_H) return null;
+    return [x, y];
   };
 
-  const addProbe = (c: { x: number; y: number; k: string }) => {
+  const addProbe = (pt: Pt) => {
     const w = worldRef.current;
-    const segs = w.cellSegs.get(c.k);
-    if (!segs || segs.length === 0) {
+    const refs = w.nodeHash.near(pt, R_SNAP);
+    if (refs.length === 0) {
       flashMsg('no vein to probe there');
       return;
     }
+    // one probe per distinct vein under the click, at its nearest node
+    const byVein = new Map<number, (typeof refs)[number]>();
+    for (const ref of refs) {
+      const cur = byVein.get(ref.vein.id);
+      if (!cur || dist(ref.pt, pt) < dist(cur.pt, pt)) byVein.set(ref.vein.id, ref);
+    }
     const added: Probe[] = [];
-    for (const s of segs) {
-      s.vein.probed = true;
-      ensureHist(w, s.vein, s.idx);
+    for (const ref of byVein.values()) {
+      ref.vein.probed = true;
+      ensureHist(w, ref.vein, ref.idx);
       added.push({
         id: nextProbeId.current++,
-        veinId: s.vein.id,
-        cellKey: c.k,
-        label: `(${c.x},${c.y})${segs.length > 1 ? ' ·vein ' + s.vein.id : ''}`,
+        veinId: ref.vein.id,
+        x: ref.pt[0],
+        y: ref.pt[1],
+        label: `(${Math.round(ref.pt[0])},${Math.round(ref.pt[1])})${byVein.size > 1 ? ' ·vein ' + ref.vein.id : ''}`,
       });
     }
     setProbes((ps) => [...ps, ...added]);
   };
 
+  // Can the pen move from a to b without crossing a source or an organ
+  // body? (Sampled every ~4px; ports are pass-approachable, bodies not.)
+  const segClear = (a: Pt, b: Pt): boolean => {
+    const w = worldRef.current;
+    const steps = Math.max(1, Math.ceil(dist(a, b) / 4));
+    for (let s = 1; s <= steps; s++) {
+      const pt: Pt = [a[0] + ((b[0] - a[0]) * s) / steps, a[1] + ((b[1] - a[1]) * s) / steps];
+      if (sourceAt(w, pt)) return false;
+      const oc = organAt(w, pt);
+      if (oc && oc.role === 'body') return false;
+    }
+    return true;
+  };
+
   const onMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
-    const c = cellAt(e);
-    if (!c) return;
+    const pt = ptAt(e);
+    if (!pt) return;
     const w = worldRef.current;
     if (toolRef.current === 'probe') {
-      if (godModeRef.current) addProbe(c);
+      if (godModeRef.current) addProbe(pt);
       return;
     }
     if (toolRef.current === 'erase') {
-      dragRef.current = { kind: 'erase', keys: new Set([c.k]) };
+      dragRef.current = { kind: 'erase', pts: [pt] };
       return;
     }
     // draw: what does this vein grow out of?
     let head: Head = { type: 'open' };
-    let startExcluded = false;
-    const src = w.sourceMap.get(c.k);
-    const oc = w.organCells.get(c.k);
+    const src = sourceAt(w, pt);
+    const oc = organAt(w, pt);
     if (src) {
       head = { type: 'source', spIdx: src.spIdx };
-      startExcluded = true;
     } else if (oc && (oc.role === 'out' || oc.role === 'side')) {
       const taken = [...w.veins.values()].some(
         (p) => p.head.type === 'port' && p.head.organId === oc.organ.id && p.head.port === oc.role,
@@ -217,63 +237,40 @@ export default function App() {
         return;
       }
       head = { type: 'port', organId: oc.organ.id, port: oc.role };
-      startExcluded = true;
     } else if (oc) {
       flashMsg("can't start a vein on an organ body");
       return;
-    } else if ((w.cellSegs.get(c.k)?.length ?? 0) > 0) {
-      head = { type: 'fork', veinId: w.cellSegs.get(c.k)![0].vein.id, cellKey: c.k };
-      startExcluded = true;
+    } else {
+      const ref = w.nodeHash.nearest(pt, R_SNAP);
+      if (ref) head = { type: 'fork', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
     }
-    const drag: DragState = { kind: 'draw', cells: [] };
-    dragRef.current = drag;
     dragHeadRef.current = head;
-    dragLastRef.current = startExcluded ? c : null;
-    if (!startExcluded) drag.cells.push(c);
+    dragRef.current = { kind: 'draw', pts: head.type === 'open' ? [pt] : [] };
   };
-
-  const dragHeadRef = useRef<Head>({ type: 'open' });
-  const dragLastRef = useRef<{ x: number; y: number; k: string } | null>(null);
 
   const onMouseMove = (e: React.MouseEvent) => {
     const dr = dragRef.current;
     if (!dr) return;
-    const c = cellAt(e);
-    if (!c) return;
+    const pt = ptAt(e);
+    if (!pt) return;
     const w = worldRef.current;
     if (dr.kind === 'erase') {
-      dr.keys.add(c.k);
+      const last = dr.pts[dr.pts.length - 1];
+      if (dist(last, pt) >= 3) dr.pts.push(pt);
       return;
     }
-    // draw: extend with L-interpolation; machines gate the path
-    const cur = dr.cells.length ? dr.cells[dr.cells.length - 1] : dragLastRef.current;
-    if (!cur || (cur.x === c.x && cur.y === c.y)) return;
-    let { x, y } = cur;
-    const stepTo = (nx: number, ny: number): boolean | 'stop' => {
-      const k2 = key(nx, ny);
-      const oc = w.organCells.get(k2);
-      if (w.sourceMap.has(k2)) return false; // can't pass through sources
-      if (oc && oc.role === 'body') return false;
-      if (oc && oc.role === 'in') {
-        dr.endOrganIn = oc.organ.id; // terminate into the organ's intake
-        return 'stop';
-      }
-      if (oc) return false; // out/side ports are starts, not pass-throughs
-      if (dr.cells.length >= 2) {
-        const prev = dr.cells[dr.cells.length - 2];
-        if (prev.x === nx && prev.y === ny) {
-          dr.cells.pop(); // dragging backwards undoes the last cell
-          return true;
-        }
-      }
-      dr.cells.push({ x: nx, y: ny, k: k2 });
-      return true;
-    };
-    while ((x !== c.x || y !== c.y) && !dr.endOrganIn) {
-      if (x !== c.x) x += Math.sign(c.x - x);
-      else y += Math.sign(c.y - y);
-      if (stepTo(x, y) !== true) break;
+    if (dr.endOrganIn !== undefined) return; // already terminated into an organ
+    const oc = organAt(w, pt);
+    if (oc && oc.role === 'in') {
+      dr.endOrganIn = oc.organ.id; // the drag ends in the organ's mouth
+      return;
     }
+    const last = dr.pts[dr.pts.length - 1];
+    if (last && dist(last, pt) < 2.5) return;
+    // the pen can't pass through sources or organ bodies — route around
+    if (last && !segClear(last, pt)) return;
+    if (!last && (sourceAt(w, pt) || (oc && oc.role === 'body'))) return;
+    dr.pts.push(pt);
   };
 
   const endDrag = () => {
@@ -282,43 +279,39 @@ export default function App() {
     if (!dr) return;
     const w = worldRef.current;
     if (dr.kind === 'erase') {
-      if (dr.keys.size) {
+      if (dr.pts.length) {
         checkpoint();
-        eraseCells(w, dr.keys);
-        setProbes((ps) => ps.filter((pr) => (w.cellSegs.get(pr.cellKey)?.length ?? 0) > 0));
+        eraseNear(w, dr.pts);
+        setProbes((ps) => ps.filter((pr) => w.nodeHash.nearest([pr.x, pr.y], R_SNAP) !== null));
       }
       return;
     }
-    let cells = dr.cells;
+    let pts = resample(smooth(dr.pts));
     let tail: Tail = { type: 'open' };
-    if (dr.endOrganIn) tail = { type: 'organ-in', organId: dr.endOrganIn };
-    else if (cells.length >= 2) {
+    if (dr.endOrganIn !== undefined) tail = { type: 'organ-in', organId: dr.endOrganIn };
+    else if (pts.length >= 2) {
       // releasing on an existing vein merges into it
-      const lastC = cells[cells.length - 1];
-      const segs = w.cellSegs.get(lastC.k);
-      if (segs && segs.length) {
-        tail = { type: 'merge', veinId: segs[0].vein.id, cellKey: lastC.k };
-        cells = cells.slice(0, -1);
-      }
+      const ref = w.nodeHash.nearest(pts[pts.length - 1], R_SNAP);
+      if (ref) tail = { type: 'merge', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
     }
-    if (cells.length < 2) {
+    if (pts.length < 2) {
       // a zero-movement click (e.g. half of a bud double-click) stays
       // silent; a real drawing attempt that connected to something — a
       // source/fork head, an organ mouth, or a merge release — complains
-      if (dr.cells.length >= 1 && (dragHeadRef.current.type !== 'open' || dr.endOrganIn || tail.type === 'merge')) {
+      if (dr.pts.length >= 1 && (dragHeadRef.current.type !== 'open' || dr.endOrganIn !== undefined || tail.type === 'merge')) {
         flashMsg('vein too short');
       }
       return;
     }
     checkpoint();
-    commitVein(w, cells, dragHeadRef.current, tail);
+    commitVein(w, pts, dragHeadRef.current, tail);
   };
 
   const onDblClick = (e: React.MouseEvent) => {
-    const c = cellAt(e);
-    if (!c) return;
+    const pt = ptAt(e);
+    if (!pt) return;
     const snap = snapshotWorld(worldRef.current);
-    const res = tryBud(worldRef.current, c.k);
+    const res = tryBud(worldRef.current, pt);
     if (res.ok) pushUndo(snap);
     flashMsg(res.msg);
   };
@@ -326,8 +319,8 @@ export default function App() {
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     if (!godModeRef.current) return;
-    const c = cellAt(e);
-    if (c) addProbe(c);
+    const pt = ptAt(e);
+    if (pt) addProbe(pt);
   };
 
   // ---- world adoption (presets, import, #world= links) ----
@@ -405,6 +398,7 @@ export default function App() {
         chem,
         tick: () => doTick(worldRef.current),
         tempOf: (p: Parcel) => tempOf(chem, p),
+        resolveAttach: (att: { veinId: number; at: Pt }) => resolveAttach(worldRef.current, att),
       };
     }
   }, []);
@@ -507,8 +501,8 @@ export default function App() {
           {flash && <span className="flash">{flash}</span>}
           <canvas
             ref={canvasRef}
-            width={COLS * CELL}
-            height={ROWS * CELL}
+            width={WORLD_W}
+            height={WORLD_H}
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={endDrag}
@@ -517,13 +511,13 @@ export default function App() {
             onContextMenu={onContextMenu}
           />
           <p className="hint">
-            drag from a colored <b>source</b> to lay a fed vein · drag from mid-vein to <b>fork</b> (50/50) · end a
-            drag on a vein to <b>merge</b>, or on an organ's <b>in</b> port to feed it · <b>double-click</b> a
+            drag freehand from a colored <b>source</b> to lay a fed vein · start on a vein to <b>fork</b> (50/50) ·
+            release on a vein to <b>merge</b>, or in an organ's <b>in</b> port to feed it · <b>double-click</b> a
             vein to bud an organ
             {godMode ? (
               <>
                 {' '}
-                · <b>right-click</b> any vein cell to probe it
+                · <b>right-click</b> any vein to probe it
               </>
             ) : (
               <> · the vein's color, width, and flow are all you get — design experiments</>

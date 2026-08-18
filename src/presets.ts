@@ -1,6 +1,8 @@
 import { commitVein, makeWorld, tryBud } from './world';
 import type { World } from './world';
 import type { Chemistry } from './chem';
+import { SEG, resample, smooth } from './geom';
+import type { Pt } from './geom';
 
 export interface Preset {
   id: string;
@@ -8,24 +10,13 @@ export interface Preset {
   build: (chem: Chemistry) => World;
 }
 
-// axis-aligned path through waypoints, inclusive of the first
-function pathThrough(waypoints: Array<[number, number]>): Array<{ x: number; y: number }> {
-  const path = [{ x: waypoints[0][0], y: waypoints[0][1] }];
-  for (const [wx, wy] of waypoints.slice(1)) {
-    let { x, y } = path[path.length - 1];
-    while (x !== wx || y !== wy) {
-      if (x !== wx) x += Math.sign(wx - x);
-      else y += Math.sign(wy - y);
-      path.push({ x, y });
-    }
-  }
-  return path;
-}
+// gentle organic polyline through waypoints, resampled to node spacing
+const curve = (...waypoints: Pt[]): Pt[] => resample(smooth(waypoints, 3), SEG);
 
-// A worked example: an R vein and a G vein merge and run east — the joined
-// stretch turns yellow and warms as fusion releases bond energy — then a
-// radical filter splits survivors from composites. Sources sit at x=1,
-// y = 2 + 4·spIdx (R:2, G:6, B:10).
+// A worked example: an R vein and a G vein merge and meander east — the
+// joined stretch turns yellow and warms as fusion releases bond energy —
+// then a radical filter splits survivors from composites. Sources sit at
+// (26, 42 + 72·spIdx): R (26,42), G (26,114).
 function buildDemo(chem: Chemistry): World {
   const w = makeWorld(chem);
   const R = chem.speciesIndex('R');
@@ -33,20 +24,23 @@ function buildDemo(chem: Chemistry): World {
   // wild anatomy is born incarnate — only player-drawn veins start as ghosts
   const trunk = commitVein(
     w,
-    pathThrough([[2, 2], [8, 2], [8, 14], [40, 14]]),
+    curve([44, 42], [150, 48], [190, 120], [230, 290], [420, 310], [700, 296], [860, 300]),
     { type: 'source', spIdx: R },
     { type: 'open' },
     true,
   )!;
-  // ends beside the trunk's x=8 column; the tail merges into cell (8,6)
+  // ends beside the trunk; the tail merges into it around (230, 290)
+  const mergeAt = trunk.pts.reduce((best, pt) =>
+    Math.hypot(pt[0] - 230, pt[1] - 290) < Math.hypot(best[0] - 230, best[1] - 290) ? pt : best,
+  );
   commitVein(
     w,
-    pathThrough([[2, 6], [7, 6]]),
+    curve([44, 114], [120, 140], [180, 220], [mergeAt[0] - 14, mergeAt[1] - 10]),
     { type: 'source', spIdx: G },
-    { type: 'merge', veinId: trunk.id, cellKey: '8,6' },
+    { type: 'merge', veinId: trunk.id, at: [mergeAt[0], mergeAt[1]] },
     true,
   );
-  tryBud(w, '24,14', { instant: true });
+  tryBud(w, [540, 305], { instant: true });
   return w;
 }
 

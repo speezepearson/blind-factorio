@@ -1,23 +1,22 @@
-// Budding: double-click a vein grows the radical filter, cuts
-// the host vein, and its ports route singles vs composites.
+// Budding: double-click a vein grows the radical filter, cuts the host,
+// and its ports route singles vs composites.
 import { finish, launch, ok } from './helpers.mjs';
 
 const d = await launch();
-const { page, drawVein, dblClickCell, pause, ticks, worldInfo } = d;
+const { page, drawVein, dblClickPt, pause, ticks, worldInfo } = d;
 
 await page.selectOption('select', 'blank');
 await page.waitForTimeout(200);
 await pause();
 
-// R and G merge into a trunk running east at y=14, so the filter gets a
-// genuine mixture (R, G, RG) to split. Drawn veins are ghosts: give the
-// incarnation front (1 cell / 2 ticks) time to build them in.
-await drawVein([[1, 2], [6, 2], [6, 14], [38, 14]]);
-await drawVein([[1, 6], [4, 6], [4, 13], [6, 13]]); // releases ON the trunk column: merge
-await ticks(130);
+// R and G merge into a trunk running east, so the filter gets a genuine
+// mixture (R, G, RG) to split. Drawn veins are ghosts: give the incarnation
+// front (1 node / 2 ticks) time to build them in.
+await drawVein([[26, 42], [300, 60], [640, 70]]);
+await drawVein([[26, 114], [140, 120], [200, 55]]);
+await ticks(140);
 
-// budding is refused on a ghost — but the trunk is grown-in by now
-await dblClickCell(22, 14);
+await dblClickPt(450, 65);
 {
   const info = await worldInfo();
   ok('bud grew an organ', info.organs.length === 1);
@@ -29,31 +28,31 @@ await dblClickCell(22, 14);
 await ticks(12); // GROW_TICKS = 10: organ finishes, understretch is collected
 {
   const info = await worldInfo();
-  ok('grown organ collects the understretch', !info.veins.some((v) => v.len === 5 && v.head === 'open' && v.tail === 'open'));
+  ok('grown organ collects the understretch', !info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
 }
 
-// grow veins from both output ports (out: east of center; rad: north or south)
-await drawVein([[24, 14], [34, 14]]);
-{
-  const info = await worldInfo();
-  ok('out-port vein attached', info.veins.some((v) => v.head === 'port'));
-}
-const sidePort = await page.evaluate(() => {
-  const w = window.__veins.world();
-  const o = [...w.organs.values()][0];
-  return [o.portSide.x, o.portSide.y];
+// grow veins from both output ports, straight away from the organ center
+const ports = await page.evaluate(() => {
+  const o = [...window.__veins.world().organs.values()][0];
+  return { c: o.c, out: o.portOut, side: o.portSide };
 });
-const sideDir = sidePort[1] > 14 ? 1 : -1;
-await drawVein([sidePort, [sidePort[0], sidePort[1] + sideDir * 6]]);
-await ticks(300); // port veins incarnate from the grown organ, then flow
+const away = (pt, c, len) => {
+  const dx = pt[0] - c[0];
+  const dy = pt[1] - c[1];
+  const m = Math.hypot(dx, dy);
+  return [pt[0] + (dx / m) * len, pt[1] + (dy / m) * len];
+};
+await drawVein([ports.out, away(ports.out, ports.c, 130)]);
+await drawVein([ports.side, away(ports.side, ports.c, 110)]);
+await ticks(320);
 {
   const info = await worldInfo();
-  const ports = info.veins.filter((v) => v.head === 'port');
-  ok('both ports have veins', ports.length === 2);
-  // identify by position: the out vein runs east at y=14
-  const outVein = ports.find((v) => v.first[1] === 14);
-  const radVein = ports.find((v) => v.first[1] !== 14);
-  // Judge at the port mouth (first cell): downstream, chemistry re-runs —
+  const portVeins = info.veins.filter((v) => v.head === 'port');
+  ok('both ports have veins', portVeins.length === 2);
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const outVein = portVeins.reduce((best, v) => (dist(v.first, ports.out) < dist(best.first, ports.out) ? v : best));
+  const radVein = portVeins.find((v) => v !== outVein);
+  // Judge at the port mouth (first node): downstream, chemistry re-runs —
   // free R+G re-fuses in the rad vein and hot RG dissociates in the out
   // vein, so whole-vein totals drift back toward equilibrium by design.
   const singles = (t) => Object.entries(t).filter(([s]) => s.length === 1).reduce((a, [, n]) => a + n, 0);

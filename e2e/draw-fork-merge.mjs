@@ -1,43 +1,43 @@
-// Drawing veins: source-fed lines, mid-vein forks, merge-on-release, erase
-// splitting, and undo.
+// Freehand drawing: source-fed curves, mid-vein forks, merge-on-release,
+// erase-brush splitting, and undo.
 import { finish, launch, ok } from './helpers.mjs';
 
 const d = await launch();
-const { page, drawVein, pause, ticks, worldInfo } = d;
+const { page, drawVein, pause, ticks, worldInfo, at } = d;
 
 await page.selectOption('select', 'blank');
 await page.waitForTimeout(200);
 await pause();
 
-// R source sits at (1,2): drag from it, east then down
-await drawVein([[1, 2], [12, 2], [12, 20]]);
+// R source sits at (26,42): drag from it, a gentle curve east
+await drawVein([[26, 42], [200, 60], [420, 48], [560, 90]]);
 {
   const info = await worldInfo();
   ok('vein laid from the R source', info.veins.length === 1 && info.veins[0].head === 'source');
 }
-await ticks(80);
+await ticks(110);
 {
   const info = await worldInfo();
   ok('R flows down the vein', (info.veins[0].totals.R ?? 0) > 5000);
 }
 
-// fork: start a drag mid-vein, run it somewhere open
-await drawVein([[12, 10], [24, 10]]);
-await ticks(60);
+// fork: start a drag ON the vein, run it somewhere open
+await drawVein([[420, 48], [430, 200], [520, 260]]);
+await ticks(80);
 {
   const info = await worldInfo();
   const fork = info.veins.find((v) => v.head === 'fork');
   ok('fork vein exists and carries fluid', !!fork && (fork.totals.R ?? 0) > 1000);
 }
 
-// merge: G source (1,6) into the trunk — release ON the trunk column
-await drawVein([[1, 6], [8, 6], [12, 6]]);
+// merge: G source (26,114) into the trunk — release ON the trunk
+await drawVein([[26, 114], [140, 130], [200, 62]]);
 {
   const info = await worldInfo();
   const merge = info.veins.find((v) => v.tail === 'merge');
   ok('release on a vein merges', !!merge && merge.head === 'source');
 }
-await ticks(200);
+await ticks(260);
 {
   const info = await worldInfo();
   const all = {};
@@ -52,13 +52,19 @@ ok('undo removed the last vein', (await worldInfo()).veins.length === before - 1
 await page.keyboard.press('Control+Shift+Z');
 ok('redo restored it', (await worldInfo()).veins.length === before);
 
-// erase mid-vein splits the trunk into fragments
+// erase-brush across the trunk splits it into fragments
 await page.click('button:has-text("Erase")');
-const p = await d.at(12, 14);
-await page.mouse.click(p.x, p.y);
+{
+  const p0 = await at(300, 20);
+  const p1 = await at(300, 100);
+  await page.mouse.move(p0.x, p0.y);
+  await page.mouse.down();
+  await page.mouse.move(p1.x, p1.y, { steps: 10 });
+  await page.mouse.up();
+}
 {
   const info = await worldInfo();
-  ok('erase split the trunk', info.veins.some((v) => v.head === 'open' && v.first[1] > 14));
+  ok('erase split the trunk', info.veins.some((v) => v.head === 'open' && v.first[0] > 300));
 }
 
 await finish(d);

@@ -57,18 +57,32 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
 
 ## The world
 
-- Veins are ordered cell paths; one parcel per cell, advecting head→tail one cell per
-  tick. Any number of veins may share a cell (drawn in offset lanes).
-- Vein endpoints attach: head to a **source**, a mid-vein **fork** (splits half of the
-  host parcel), or an organ's **out/side port**; tail to a mid-vein **merge** (adds
-  into the host parcel), an organ's **in** port, or nothing (vents).
-- **Ghost veins & incarnation**: player-drawn veins start as ghosts — dashed routes
-  with no walls. They grow real ("incarnate") at 1 cell per 2 ticks, spreading from
-  every contact with the live network: a head on a source or grown organ port, a
-  fork/merge onto an incarnate cell, or a live vein's end junctioning onto them
-  mid-route. Unconnected ghosts stay ghosts. Ghost cells carry no fluid, exchange no
-  heat, and can't be budded on. Preset/imported "wild anatomy" is born incarnate.
-- **Infinite throughput; every sink is visible.** Everything advances one cell per
+**There is no grid.** The world is a continuous 966×630 canvas; veins are freehand
+curves. The rigid quantization survives because it never lived in geometry: each
+drawn curve is resampled into NODES spaced ~SEG (16 px) apart along its arc, one
+integer-ledger parcel per node, advecting node-to-node one hop per tick. Geometry
+only decides which discrete containers sit next to which, and it is frozen at draw
+time (all committed coordinates are quantized to quarter pixels, so worlds
+serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
+
+- Veins are node chains; drawing is freehand (Chaikin-smoothed, arc-resampled).
+  Vein endpoints attach: head to a **source**, a mid-vein **fork** (splits half of
+  the host parcel), or an organ's **out/side port**; tail to a mid-vein **merge**
+  (adds into the host parcel), an organ's **in** port, or nothing (vents).
+  Fork/merge/probe anchors are *points*, resolved to the nearest node within R_SNAP
+  and healing onto whatever covers the spot.
+- **Proximity heat**: any two incarnate nodes within R_CROSS (10 px) that aren't
+  chain neighbors exchange heat — crossings, closely parallel runs, even a vein's
+  own hairpins. Matter never crosses between veins except at junctions. Drawing two
+  veins side by side *is* a heat exchanger.
+- **Ghost veins & incarnation**: player-drawn veins start as ghosts — dashed
+  threads with no walls. They grow real ("incarnate") at 1 node per 2 ticks,
+  spreading from every contact with the live network: a head on a source or grown
+  organ port, a fork/merge onto an incarnate node, or a live vein's end junctioning
+  onto them mid-route. Unconnected ghosts stay ghosts. Ghost nodes carry no fluid,
+  exchange no heat, and can't be budded on. Preset/imported "wild anatomy" is born
+  incarnate.
+- **Infinite throughput; every sink is visible.** Everything advances one node per
   tick, nothing ever queues. Fluid that runs out of vein *vents* into the cavity —
   at an open tail, at the frontier of a still-incarnating ghost, at a not-yet-built
   merge junction, into a growing organ's mouth (it's building itself with it), or
@@ -76,26 +90,26 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
   stays honest because every vent is a structural feature the player can point at;
   fluid never vanishes mid-vein (budding refuses stretches that would hide a
   junction — and thus a vent — under the organ body).
-- **Organs** grow by *budding*: double-click any incarnate vein cell. The organ's
-  5×5 footprint centers there and eats the contiguous in-footprint stretch of that
-  vein — bends and all. Requirements: the vein must flow in from outside the
-  footprint; downstream it must exit the footprint or terminate openly inside; no
-  other vein may junction onto the eaten stretch (that vent would hide under the
-  organ); each cut end must leave a ≥2-cell fragment or nothing-with-nothing-
-  attached. **Ports sit where the vein crossed the organ wall** (a vein ending
-  inside gets its out port relocated to a free wall cell; an exit through the entry
-  square shoves the out port over by one and grows a connecting stub); the side
-  port takes the wall cell farthest from both. Other stretches of the same vein
-  crossing the footprint are untouched. The organ swells over GROW_TICKS (10)
-  ticks — swallowing its feed and emitting nothing while it grows (downstream
-  drains); the eaten stretch (the "understretch") stays visible beneath it until
-  growth completes, then is garbage-collected. One organ exists so far — the
-  **radical filter** (free radicals out the side port, composites out the main
+- **Organs** are discs (radius R_ORGAN = 52 px) grown by *budding*: double-click a
+  vein and the disc centers on its nearest node, eating the contiguous in-disc
+  stretch of that vein — curves and all. Requirements: the vein must flow in from
+  outside the disc; downstream it must exit or terminate openly inside; no other
+  vein may junction onto the eaten stretch; each cut end must leave a ≥2-node
+  fragment or nothing-with-nothing-attached. **Ports sit where the curve pierced
+  the membrane** (a vein ending inside gets its out port relocated to the rim point
+  farthest from the in port; an exit right at the entry point shoves the out port
+  along the rim and grows a connecting stub); the side port takes the rim point
+  farthest from both, preferring spots no surviving vein runs through. Other
+  stretches of the same vein crossing the disc are untouched. The organ swells over
+  GROW_TICKS (10) ticks — swallowing its feed and emitting nothing while it grows
+  (downstream drains); the eaten stretch (the "understretch") stays visible beneath
+  it until growth completes, then is garbage-collected. One organ exists so far —
+  the **radical filter** (free radicals out the side port, composites out the main
   port); its name and side-port label are god-only on the canvas. Budding is
   hard-coded; the mixture-determined differentiation grammar is the next design
   milestone.
-- Erasing cells removes them from every vein passing through, splitting survivors into
-  fragments (fluid rides along); organs touched by an erase die (an interrupted
+- Erasing is a brush: nodes within R_ERASE of the stroke vanish, splitting veins
+  into fragments (fluid rides along); organs the brush touches die (an interrupted
   organ's understretch survives, re-exposed).
 
 ## Two views, one world
@@ -103,7 +117,7 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
 - **Player view** (default): vein color, width, opacity, flow direction, and organ
   anatomy. That's it — no composition readouts, no temperature. The game is inducing
   the chemistry from experiments.
-- **God mode** (checkbox or **G**): probes (right-click a vein cell) charting per-cell
+- **God mode** (checkbox or **G**): probes (right-click a vein) charting per-node
   composition and temperature over time, the temperature overlay, per-radical
   stickiness sliders, and species labels on sources.
 
@@ -114,8 +128,9 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
 | `src/chem.ts` | The chemistry engine: radical table, species/channel derivation, quantized tau-leaped kinetics, integer heat, seeded RNG, and the color projection. Pure logic, generic over the radical set. |
 | `src/world.ts` | The world: veins, organs, sources, positional attachments, the tick (heat → reactions → advection → record), editing ops (commit/erase/bud), undo snapshots. |
 | `src/render.ts` | Canvas rendering — the flesh-cavity theme lives here: mottled breathing backdrop (with drips), membrane-walled veins with peristalsis and sub-tick fluid slide, smooth ghost-incarnation extrusion, wobbling organ growth, load-driven heartbeat. Owns the player/god visibility split. All ambience is deliberately dimmer and slower than the data channels (vein color/width). |
-| `src/Probes.tsx` | God-mode probe cards: recharts stacked-area composition + temperature line, fed by per-cell ring-buffer history. |
-| `src/serialize.ts` | World structure ↔ URL-safe deflated code (`rv` format v1); fluid/heat state intentionally not serialized — imports refill from sources. |
+| `src/geom.ts` | Continuous-space primitives: smoothing, arc-length resampling, quarter-pixel quantization, the node spatial hash, and every geometric constant (SEG, R_SNAP, R_CROSS, R_ORGAN…). |
+| `src/Probes.tsx` | God-mode probe cards: recharts stacked-area composition + temperature line, fed by per-node ring-buffer history. |
+| `src/serialize.ts` | World structure ↔ URL-safe deflated code (`rv` format 2: quarter-pixel integer points, lossless round-trip; rv 1 grid codes migrate, loading fully incarnate); fluid/heat state intentionally not serialized — imports refill from sources. |
 | `src/presets.ts` | Built-in worlds (fuse & filter demo, fresh slate). |
 | `src/App.tsx` | The shell: tools, mouse gestures (draw with attachment resolution, erase, probe, bud), rAF sim loop, undo/redo, god mode, sharing. |
 
@@ -139,5 +154,5 @@ override; first-time: `npx playwright install chromium`). Suites are standalone
 (`node e2e/<name>.mjs`); `e2e/helpers.mjs` holds the shared driver and the
 `worldInfo()` snapshot reader. One physics gotcha the tests encode: organ outputs are
 pure only at the port mouth — downstream, chemistry re-equilibrates (free R+G re-fuses,
-hot composites dissociate), so assertions about separation must read the first cell,
+hot composites dissociate), so assertions about separation must read the first node,
 not whole-vein totals.
