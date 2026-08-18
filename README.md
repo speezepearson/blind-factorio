@@ -70,7 +70,10 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
   the host parcel), or an organ's **out/side port**; tail to a mid-vein **merge**
   (adds into the host parcel), an organ's **in** port, or nothing (vents).
   Fork/merge/probe anchors are *points*, resolved to the nearest node within R_SNAP
-  and healing onto whatever covers the spot.
+  and healing onto whatever covers the spot. **Endpoints snap**: a stroke starting on
+  a vein's open tail extends that vein (no fork, no split); one ending on an open
+  head prepends to it (feeds it); one bridging an open tail to an open head fuses
+  the three into a single vein.
 - **Proximity heat**: any two incarnate nodes within R_CROSS (10 px) that aren't
   chain neighbors exchange heat — crossings, closely parallel runs, even a vein's
   own hairpins. Matter never crosses between veins except at junctions. Drawing two
@@ -86,10 +89,11 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
   tick, nothing ever queues. Fluid that runs out of vein *vents* into the cavity —
   at an open tail, at the frontier of a still-incarnating ghost, at a not-yet-built
   merge junction, into a growing organ's mouth (it's building itself with it), or
-  as unconsumed organ output at a port with no vein on it. Mass-balance inference
-  stays honest because every vent is a structural feature the player can point at;
-  fluid never vanishes mid-vein (budding refuses stretches that would hide a
-  junction — and thus a vent — under the organ body).
+  as unconsumed organ output at a port with no vein on it. Every vent is *drawn*: a
+  fuzzy haze of the escaping fluid's own light, area ∝ rate (invisible fluid vents
+  invisibly). Mass-balance inference stays honest because every vent is a structural
+  feature the player can point at; fluid never vanishes mid-vein (budding refuses
+  stretches that would hide a junction — and thus a vent — under the organ body).
 - **Organs** are discs (radius R_ORGAN = 52 px) grown by *budding*: double-click a
   vein and the disc centers on its nearest node, eating the contiguous in-disc
   stretch of that vein — curves and all. Requirements: the vein must flow in from
@@ -112,7 +116,8 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
   milestone.
 - Erasing is a brush: nodes within R_ERASE of the stroke vanish, splitting veins
   into fragments (fluid rides along); organs the brush touches die (an interrupted
-  organ's snipped host halves survive, re-exposed).
+  organ's snipped host halves survive, re-exposed). **Shift-click** severs the whole
+  junction-to-junction stretch under the cursor — it glows red on shift-hover first.
 
 ## Two views, one world
 

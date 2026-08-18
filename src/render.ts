@@ -423,10 +423,8 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
         const d = T - T_AMB;
         if (Math.abs(d) < 0.04) continue;
         const a = Math.min(0.6, Math.abs(d) * 0.45);
-        ctx.strokeStyle = d > 0 ? `rgba(255,90,50,${a})` : `rgba(70,140,255,${a})`;
-        ctx.lineWidth = widthOf(p.flow[i]) + 9;
-        ctx.lineCap = 'round';
-        strokeSeg(ctx, p.pts, Math.max(0, i - 0.5), Math.min(p.pts.length - 1, i + 0.5), widthOf(p.flow[i]) + 9, ctx.strokeStyle as string);
+        const halo = d > 0 ? `rgba(255,90,50,${a})` : `rgba(70,140,255,${a})`;
+        strokeSeg(ctx, p.pts, Math.max(0, i - 0.5), Math.min(p.pts.length - 1, i + 0.5), widthOf(p.flow[i]) + 9, halo);
       }
     }
   }

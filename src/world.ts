@@ -564,11 +564,7 @@ export function eraseNear(w: World, brush: Pt[]): void {
   }
   w.veins = new Map(newVeins.map((p) => [p.id, p]));
   reindex(w);
-  // attachments pointing at vanished nodes go open
-  for (const p of w.veins.values()) {
-    if (p.head.type === 'fork' && !resolveAttach(w, p.head)) p.head = { type: 'open' };
-    if (p.tail.type === 'merge' && !resolveAttach(w, p.tail)) p.tail = { type: 'open' };
-  }
+  healAttachments(w);
 }
 
 // ---- endpoint extension & unification ----

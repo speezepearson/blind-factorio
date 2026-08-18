@@ -172,7 +172,7 @@ export function stochRound(x: number): number {
   return k;
 }
 
-// ---- parcels: one cell's worth of fluid, with its heat ledger ----
+// ---- parcels: one node's worth of fluid, with its heat ledger ----
 
 export interface Parcel {
   c: Int32Array; // particle counts per species
