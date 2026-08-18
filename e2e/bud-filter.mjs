@@ -21,14 +21,15 @@ await dblClickPt(450, 65);
   const info = await worldInfo();
   ok('bud grew an organ', info.organs.length === 1);
   ok('host vein was cut around it', info.veins.some((v) => v.tail === 'organ-in'));
-  // (open/open is the understretch's signature; no other vein here is open at both ends)
-  ok('understretch survives beneath the growing organ', info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
+  // the bud snips the host locally: the downstream half is detached
+  // (open head) until the organ finishes and claims it
+  ok('downstream half detached beneath the growing organ', info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
   ok('organ starts ungrown', info.organs[0].growth === 0);
 }
-await ticks(12); // GROW_TICKS = 10: organ finishes, understretch is collected
+await ticks(12); // GROW_TICKS = 10: organ finishes and trims to its membrane
 {
   const info = await worldInfo();
-  ok('grown organ collects the understretch', !info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
+  ok('grown organ claims the downstream half', !info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
 }
 
 // grow veins from both output ports, straight away from the organ center

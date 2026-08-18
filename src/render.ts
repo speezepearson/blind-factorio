@@ -1,5 +1,5 @@
-import { fluidColor, speciesColor, tempOf, T_AMB, SCALE } from './chem';
-import { GROW_TICKS, INC_PERIOD, organGrown } from './world';
+import { fluidRGB, speciesColor, tempOf, T_AMB, SCALE } from './chem';
+import { GROW_TICKS, INC_PERIOD, organGrown, resolveAttach } from './world';
 import type { Vein, World } from './world';
 import { PORT_R, SRC_R, WORLD_H, WORLD_W, posAt } from './geom';
 import type { Pt } from './geom';
@@ -149,7 +149,7 @@ function strokeSeg(ctx: CanvasRenderingContext2D, pts: Pt[], t0: number, t1: num
   ctx.stroke();
 }
 
-function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein): void {
+function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein, pinned: Set<string>): void {
   const chem = view.world.chem;
   const pts = p.pts;
   const n = pts.length;
@@ -201,17 +201,31 @@ function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein): void
     if ((i === 0 || !p.inc[i - 1]) && (i === n - 1 || !p.inc[i + 1])) strokeSeg(ctx, pts, i - 0.001, i + 0.001, lw, '#1b1214');
   }
 
-  // 3) fluid: each parcel drawn as a sliding one-node segment, always
-  // interpolating from the node behind (everything advances every tick)
+  // 3) fluid: each region of vein (the half-node span around station i)
+  // always shows station i's contents — regions are FIXED in space, so
+  // composition boundaries pinned to a station (junctions, terminals)
+  // never wobble. Motion still reads smoothly because a region whose
+  // incoming content is truthfully known (plain mid-vein: next tick it
+  // holds exactly what station i-1 holds now) cross-fades toward it over
+  // the tick. Stations where content is *made* rather than passed along —
+  // heads and merge targets — stay pinned-static.
   for (let i = 0; i < n; i++) {
     if (!p.inc[i]) continue;
-    const color = fluidColor(chem, p.parcels[i].c);
-    if (!color) continue;
-    const slide = frac - 1; // moving from i-1 toward i over the tick
-    const t0 = Math.max(0, i + slide - 0.5);
-    const t1 = Math.min(n - 1, i + slide + 0.5);
+    const cur = fluidRGB(chem, p.parcels[i].c);
+    const isPinned = i === 0 || pinned.has(p.id + ':' + i) || !p.inc[i - 1];
+    const inc = isPinned ? cur : fluidRGB(chem, p.parcels[i - 1].c);
+    if (!cur && !inc) continue;
+    const aCur = cur ? 1 : 0;
+    const aInc = inc ? 1 : 0;
+    const alpha = aCur * (1 - frac) + aInc * frac;
+    if (alpha < 0.02) continue;
+    const base = cur ?? inc!;
+    const other = inc ?? cur!;
+    const mix = (k: number) => Math.round(base[k] * (1 - frac) + other[k] * frac);
     const wv = Math.max(1.2, widthOf(p.flow[i]) * wave(i, p.flow[i]));
-    strokeSeg(ctx, pts, t0, t1, wv, color);
+    ctx.globalAlpha = alpha;
+    strokeSeg(ctx, pts, Math.max(0, i - 0.5), Math.min(n - 1, i + 0.5), wv, `rgb(${mix(0)},${mix(1)},${mix(2)})`);
+    ctx.globalAlpha = 1;
   }
 
   // 4) drifting direction chevrons, riding the flow — only where there IS
@@ -275,12 +289,14 @@ function drawOrgans(ctx: CanvasRenderingContext2D, view: ViewState): void {
     const g = grown ? 1 : Math.min(1, (o.growth + Math.max(0, Math.min(1, phase - w.tick))) / GROW_TICKS);
 
     if (!grown) {
-      // a wobbling blob swelling over the vein beneath it
+      // a wobbling blob swelling over the vein beneath it — fully opaque,
+      // so the doomed stretch disappears under it as it grows
       const ease = g * g * (3 - 2 * g);
       blobPath(ctx, o.c, o.r * (0.22 + 0.78 * ease), t, 1 - 0.5 * ease);
-      ctx.fillStyle = `rgba(210,185,150,${0.25 + 0.65 * ease})`;
+      const tone = (a: number, b: number) => Math.round(a + (b - a) * ease);
+      ctx.fillStyle = `rgb(${tone(196, 232)},${tone(168, 221)},${tone(128, 200)})`;
       ctx.fill();
-      ctx.strokeStyle = `rgba(122,111,88,${0.4 + 0.6 * ease})`;
+      ctx.strokeStyle = '#7a6f58';
       ctx.lineWidth = 2;
       ctx.stroke();
       continue;
@@ -363,7 +379,16 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     }
   }
 
-  for (const p of w.veins.values()) drawVein(ctx, view, p);
+  // stations where fluid is *made* rather than passed along (merge targets)
+  // render pinned-static — their color boundary belongs to the station
+  const pinned = new Set<string>();
+  for (const q of w.veins.values()) {
+    if (q.tail.type === 'merge') {
+      const seg = resolveAttach(w, q.tail);
+      if (seg) pinned.add(seg.vein.id + ':' + seg.idx);
+    }
+  }
+  for (const p of w.veins.values()) drawVein(ctx, view, p, pinned);
 
   // sources: wellheads in the cavity wall, painted with their fluid's light
   for (const s of w.sources) {

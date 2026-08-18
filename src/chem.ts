@@ -349,7 +349,9 @@ export function ambientLeak(chem: Chemistry, p: Parcel): void {
 // loads. Reactions conserve radical loads, so all chemistry is
 // chromatically invisible — R+G looks exactly as yellow as RG.
 
-export function fluidColor(chem: Chemistry, c: Int32Array): string | null {
+// perceived color as raw [r,g,b] channels (0-255), or null if nothing
+// visible — the view layer blends these for sub-tick animation
+export function fluidRGB(chem: Chemistry, c: Int32Array): [number, number, number] | null {
   let px = 0;
   let py = 0;
   let pz = 0;
@@ -379,7 +381,12 @@ export function fluidColor(chem: Chemistry, c: Int32Array): string | null {
   // until K ships — revisit the curve then)
   const shade = visible / Math.max(1, visible + dark);
   const ch = (x: number) => Math.round((45 + 200 * (x / mx)) * shade);
-  return `rgb(${ch(px)},${ch(py)},${ch(pz)})`;
+  return [ch(px), ch(py), ch(pz)];
+}
+
+export function fluidColor(chem: Chemistry, c: Int32Array): string | null {
+  const rgb = fluidRGB(chem, c);
+  return rgb ? `rgb(${rgb[0]},${rgb[1]},${rgb[2]})` : null;
 }
 
 // solid chip color for one species (sources, swatches)

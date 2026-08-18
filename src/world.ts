@@ -73,10 +73,12 @@ export interface Organ {
   outReady: Parcel | null;
   sideReady: Parcel | null;
   // A freshly budded organ grows over GROW_TICKS ticks. While growing it
-  // swallows its feed and emits nothing; the stretch of host vein under it
-  // stays visible until growth completes, then is removed.
+  // swallows its feed and emits nothing. Budding snips the host vein once,
+  // locally, at the organ's center; the two halves stay intact (hidden
+  // under the opaque growing blob) until completion, when their in-disc
+  // portions are trimmed back to the membrane and the ports attach.
   growth: number; // ticks grown; >= GROW_TICKS = fully incarnate
-  understretchId: number | null; // the doomed host-vein stretch beneath it
+  pending: { upId: number; downId: number | null } | null; // halves awaiting the completion trim
   load: number; // smoothed input radicals/tick (drives the heartbeat pulse)
 }
 
@@ -341,29 +343,20 @@ export function doTick(w: World): void {
     }
     // open tails vent (discarded)
   }
-  // organs: growing ones just grow; on completion the host stretch beneath
-  // is garbage-collected (it has been hidden under the organ since budding)
-  let reindexNeeded = false;
+  // organs: growing ones just grow; on completion the two host halves are
+  // trimmed back to the membrane (their in-disc portions have been hidden
+  // under the opaque blob since budding) and the ports attach
   for (const o of w.organs.values()) {
     if (!organGrown(o)) {
       o.growth++;
       o.outReady = null;
       o.sideReady = null;
       o.inAccum = null;
-      if (organGrown(o) && o.understretchId !== null) {
-        const stretch = w.veins.get(o.understretchId);
-        if (stretch) {
-          for (const h of stretch.hist) if (h) w.histCount--;
-          w.veins.delete(stretch.id);
-          reindexNeeded = true;
-        }
-        o.understretchId = null;
-      }
+      if (organGrown(o)) completeBud(w, o);
       continue;
     }
     organProcess(w, o);
   }
-  if (reindexNeeded) reindex(w);
 
   // 4) RECORD
   w.tick++;
@@ -380,6 +373,72 @@ export function doTick(w: World): void {
       h[base + chem.nsp] = tempOf(chem, parcel);
     }
   }
+}
+
+// slice a vein down to pts[s..e], dropping (and accounting) trimmed hists
+function trimVein(w: World, p: Vein, s: number, e: number): void {
+  for (let i = 0; i < p.pts.length; i++) {
+    if ((i < s || i > e) && p.hist[i]) w.histCount--;
+  }
+  p.pts = p.pts.slice(s, e + 1);
+  p.parcels = p.parcels.slice(s, e + 1);
+  p.hist = p.hist.slice(s, e + 1);
+  p.flow = p.flow.slice(s, e + 1);
+  p.inc = p.inc.slice(s, e + 1);
+  p.incTick = p.incTick.slice(s, e + 1);
+}
+
+function deleteVein(w: World, p: Vein): void {
+  for (const h of p.hist) if (h) w.histCount--;
+  w.veins.delete(p.id);
+}
+
+// attachments whose anchor no longer resolves to any node go open
+function healAttachments(w: World): void {
+  for (const p of w.veins.values()) {
+    if (p.head.type === 'fork' && !resolveAttach(w, p.head)) p.head = { type: 'open' };
+    if (p.tail.type === 'merge' && !resolveAttach(w, p.tail)) p.tail = { type: 'open' };
+  }
+}
+
+// The completion trim: when a budded organ finishes growing, the two host
+// halves (snipped at the organ's center at bud time, hidden under the
+// opaque blob since) are cut back to the membrane and the ports attach.
+function completeBud(w: World, o: Organ): void {
+  if (!o.pending) return;
+  const { upId, downId } = o.pending;
+  o.pending = null;
+  const inDisc = (pt: Pt) => dist(pt, o.c) <= o.r;
+  const up = w.veins.get(upId);
+  if (up && up.tail.type === 'organ-in' && up.tail.organId === o.id) {
+    let e = up.pts.length - 1;
+    while (e >= 0 && inDisc(up.pts[e])) e--;
+    if (e + 1 >= 2) trimVein(w, up, 0, e);
+    else deleteVein(w, up); // fully swallowed
+  }
+  const down = downId !== null ? w.veins.get(downId) : undefined;
+  if (down && down.head.type === 'open') {
+    let s = 0;
+    while (s < down.pts.length && inDisc(down.pts[s])) s++;
+    if (down.pts.length - s >= 2) {
+      trimVein(w, down, s, down.pts.length - 1);
+      down.head = { type: 'port', organId: o.id, port: 'out' };
+      // if the trimmed head sits away from the out port (relocated-port
+      // cases), grow a connecting stub of vein out of the port
+      const gap = dist(o.portOut, down.pts[0]);
+      if (gap > SEG * 1.4) {
+        const stub = resample([o.portOut, down.pts[0]], SEG).slice(0, -1);
+        down.pts = [...stub.map((q) => [q[0], q[1]] as Pt), ...down.pts];
+        down.parcels = [...stub.map(() => emptyParcel(w.chem)), ...down.parcels];
+        down.hist = [...stub.map(() => null), ...down.hist];
+        down.flow = [...stub.map(() => 0), ...down.flow];
+        down.inc = [...stub.map(() => 1), ...down.inc];
+        down.incTick = [...stub.map(() => w.tick), ...down.incTick];
+      }
+    } else deleteVein(w, down);
+  }
+  reindex(w);
+  healAttachments(w);
 }
 
 // The radical filter, the one organ so far: free radicals (single-radical
@@ -424,9 +483,9 @@ export function commitVein(w: World, pts: Pt[], head: Head, tail: Tail, incarnat
 }
 
 // Erase everything the brush touched: organs whose disc it hit die
-// (attachments re-open; a growing organ's understretch is re-exposed), and
-// veins lose the nodes within R_ERASE of the brush, splitting into
-// fragments (fluid rides along).
+// (attachments re-open; a growing organ's snipped host halves survive,
+// re-exposed), and veins lose the nodes within R_ERASE of the brush,
+// splitting into fragments (fluid rides along).
 export function eraseNear(w: World, brush: Pt[]): void {
   const hit = (pt: Pt, r: number) => brush.some((bp) => dist(bp, pt) <= r);
   for (const o of [...w.organs.values()]) {
@@ -583,20 +642,13 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
       });
     };
     const portIn: Pt = [p.pts[a][0], p.pts[a][1]];
+    // out port: the natural exit crossing — unless the vein exits right
+    // where it entered, or terminates inside, in which case it relocates
+    // along the rim (completeBud grows a connecting stub if needed)
     let portOut: Pt;
-    let downPrepend: Pt[] = [];
-    if (b < n - 1) {
-      const natural = p.pts[b];
-      if (dist(natural, portIn) >= 18) {
-        portOut = [natural[0], natural[1]];
-      } else {
-        // the vein exits right where it entered: shove the out port along
-        // the rim and grow a stub of vein connecting it to the downstream
-        portOut = rimPick([portIn]);
-        downPrepend = resample([portOut, p.pts[b + 1]], SEG).slice(0, -1);
-      }
+    if (b < n - 1 && dist(p.pts[b], portIn) >= 18) {
+      portOut = [p.pts[b][0], p.pts[b][1]];
     } else {
-      // the vein terminates inside: the out port goes wherever there's room
       portOut = rimPick([portIn]);
     }
     const portSide = rimPick([portIn, portOut]);
@@ -613,60 +665,45 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
       outReady: null,
       sideReady: null,
       growth: instant ? GROW_TICKS : 0,
-      understretchId: null,
+      pending: null,
       load: 0,
     };
-    const upPts = p.pts.slice(0, a);
-    const downPts = [...downPrepend, ...p.pts.slice(b + 1)];
-    w.veins.delete(p.id);
-    if (instant) {
-      for (let j = a; j <= b; j++) if (p.hist[j]) w.histCount--;
-    } else {
-      const stretch: Vein = {
+    // The bud itself is LOCAL: snip the host once, at the organ's center.
+    // Both halves stay intact — their in-disc portions hidden under the
+    // opaque growing blob — until completeBud() trims them back to the
+    // membrane on completion. The upstream half keeps the host's id, so
+    // anchors referencing the host keep resolving.
+    let m = idx;
+    if (n - m - 1 === 1) m = idx + 1; // never strand a 1-node orphan
+    const bPts = p.pts.slice(m + 1);
+    let downId: number | null = null;
+    if (bPts.length >= 2) {
+      const B: Vein = {
         id: w.nextId++,
-        pts: p.pts.slice(a, b + 1),
-        parcels: p.parcels.slice(a, b + 1),
-        hist: p.hist.slice(a, b + 1),
-        flow: p.flow.slice(a, b + 1),
-        inc: p.inc.slice(a, b + 1),
-        incTick: p.incTick.slice(a, b + 1),
+        pts: bPts,
+        parcels: p.parcels.slice(m + 1),
+        hist: p.hist.slice(m + 1),
+        flow: p.flow.slice(m + 1),
+        inc: p.inc.slice(m + 1),
+        incTick: p.incTick.slice(m + 1),
         head: { type: 'open' },
-        tail: { type: 'open' },
-        probed: p.probed,
-      };
-      w.veins.set(stretch.id, stretch);
-      o.understretchId = stretch.id;
-    }
-    if (upPts.length >= 2) {
-      w.veins.set(w.nextId, {
-        id: w.nextId++,
-        pts: upPts,
-        parcels: p.parcels.slice(0, a),
-        hist: p.hist.slice(0, a),
-        flow: p.flow.slice(0, a),
-        inc: p.inc.slice(0, a),
-        incTick: p.incTick.slice(0, a),
-        head: p.head,
-        tail: { type: 'organ-in', organId: o.id },
-        probed: p.probed,
-      });
-    }
-    if (downPts.length >= 2) {
-      w.veins.set(w.nextId, {
-        id: w.nextId++,
-        pts: downPts,
-        parcels: [...downPrepend.map(() => emptyParcel(w.chem)), ...p.parcels.slice(b + 1)],
-        hist: [...downPrepend.map(() => null), ...p.hist.slice(b + 1)],
-        flow: [...downPrepend.map(() => 0), ...p.flow.slice(b + 1)],
-        inc: [...downPrepend.map(() => 1), ...p.inc.slice(b + 1)],
-        incTick: [...downPrepend.map(() => w.tick), ...p.incTick.slice(b + 1)],
-        head: { type: 'port', organId: o.id, port: 'out' },
         tail: p.tail,
         probed: p.probed,
-      });
+      };
+      w.veins.set(B.id, B);
+      downId = B.id;
     }
+    p.pts = p.pts.slice(0, m + 1);
+    p.parcels = p.parcels.slice(0, m + 1);
+    p.hist = p.hist.slice(0, m + 1);
+    p.flow = p.flow.slice(0, m + 1);
+    p.inc = p.inc.slice(0, m + 1);
+    p.incTick = p.incTick.slice(0, m + 1);
+    p.tail = { type: 'organ-in', organId: o.id };
+    o.pending = { upId: p.id, downId };
     w.organs.set(o.id, o);
     reindex(w);
+    if (instant) completeBud(w, o);
     return { ok: true, msg: 'something is budding here' };
   }
   return { ok: false, msg: why };
@@ -706,6 +743,7 @@ export function snapshotWorld(w: World): World {
           portIn: [o.portIn[0], o.portIn[1]] as Pt,
           portOut: [o.portOut[0], o.portOut[1]] as Pt,
           portSide: [o.portSide[0], o.portSide[1]] as Pt,
+          pending: o.pending ? { ...o.pending } : null,
           inAccum: o.inAccum ? cloneParcel(o.inAccum) : null,
           outReady: o.outReady ? cloneParcel(o.outReady) : null,
           sideReady: o.sideReady ? cloneParcel(o.sideReady) : null,

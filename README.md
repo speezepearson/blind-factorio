@@ -100,17 +100,19 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
   farthest from the in port; an exit right at the entry point shoves the out port
   along the rim and grows a connecting stub); the side port takes the rim point
   farthest from both, preferring spots no surviving vein runs through. Other
-  stretches of the same vein crossing the disc are untouched. The organ swells over
-  GROW_TICKS (10) ticks — swallowing its feed and emitting nothing while it grows
-  (downstream drains); the eaten stretch (the "understretch") stays visible beneath
-  it until growth completes, then is garbage-collected. One organ exists so far —
+  stretches of the same vein crossing the disc are untouched. **Budding is local**:
+  the host is snipped once, at the organ's center (a cut the newborn blob
+  immediately covers); both halves stay intact — hidden under the opaque growing
+  blob — while the organ swells over GROW_TICKS (10) ticks, swallowing its feed and
+  emitting nothing (downstream drains). Only on completion are the halves trimmed
+  back to the membrane and the ports attached. One organ exists so far —
   the **radical filter** (free radicals out the side port, composites out the main
   port); its name and side-port label are god-only on the canvas. Budding is
   hard-coded; the mixture-determined differentiation grammar is the next design
   milestone.
 - Erasing is a brush: nodes within R_ERASE of the stroke vanish, splitting veins
   into fragments (fluid rides along); organs the brush touches die (an interrupted
-  organ's understretch survives, re-exposed).
+  organ's snipped host halves survive, re-exposed).
 
 ## Two views, one world
 

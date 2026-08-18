@@ -90,10 +90,9 @@ async function pipeBytes(bytes: Uint8Array, transform: GenericTransformStream): 
 }
 
 export async function worldToCode(w: World): Promise<string> {
-  // understretches (host-vein remnants beneath growing organs) are doomed
-  // transients — exported organs arrive fully grown, so skip them
-  const doomed = new Set([...w.organs.values()].map((o) => o.understretchId).filter((id) => id !== null));
-  const veins = [...w.veins.values()].filter((p) => !doomed.has(p.id));
+  // (growing organs export as grown, their untrimmed halves as-is — the
+  // imported organ simply keeps the extra in-disc vein beneath its body)
+  const veins = [...w.veins.values()];
   const veinIndex = new Map(veins.map((p, i) => [p.id, i]));
   const organs = [...w.organs.values()];
   const organIndex = new Map(organs.map((o, i) => [o.id, i]));
@@ -205,7 +204,7 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
       outReady: null,
       sideReady: null,
       growth: GROW_TICKS,
-      understretchId: null,
+      pending: null,
       load: 0,
     };
     w.organs.set(o.id, o);

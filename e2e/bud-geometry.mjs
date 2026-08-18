@@ -23,12 +23,15 @@ await dblClickPt(420, 290);
   ok('in port sits on the membrane', Math.abs(dist(o.portIn, [o.cx, o.cy]) - o.r) < 18);
   ok('out port sits on the membrane', Math.abs(dist(o.portOut, [o.cx, o.cy]) - o.r) < 18);
   ok('ports are distinct wall crossings', dist(o.portIn, o.portOut) > 30);
-  ok('feeder and continuation both attached', info.veins.some((v) => v.tail === 'organ-in') && info.veins.some((v) => v.head === 'port'));
+  // budding is local: feeder attaches immediately; the downstream half
+  // stays detached (open/open) until the organ finishes and claims it
+  ok('feeder attached, continuation detached', info.veins.some((v) => v.tail === 'organ-in') && info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
 }
-await ticks(12); // organ grows in, understretch collected
+await ticks(12); // organ grows in, halves trimmed to the membrane
 {
   const info = await worldInfo();
-  ok('understretch collected after growth', !info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
+  ok('halves trimmed and attached after growth', !info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
+  ok('continuation claimed by the out port', info.veins.some((v) => v.head === 'port'));
 }
 await ticks(80);
 {
