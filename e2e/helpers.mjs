@@ -87,8 +87,11 @@ export async function launch(hash = '') {
             }
           }
           const firstTotals = {};
+          const lastTotals = {};
           for (let i = 0; i < chem.nsp; i++) {
             if (p.parcels[0].c[i] > 0) firstTotals[chem.species[i]] = p.parcels[0].c[i];
+            const lastC = p.parcels[p.parcels.length - 1].c[i];
+            if (lastC > 0) lastTotals[chem.species[i]] = lastC;
           }
           return {
             id: p.id,
@@ -99,6 +102,7 @@ export async function launch(hash = '') {
             last: p.pts[p.pts.length - 1],
             totals,
             firstTotals,
+            lastTotals,
             incCount: p.inc.reduce((a, b) => a + b, 0),
           };
         }),

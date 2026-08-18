@@ -3,6 +3,15 @@
 Places where I deliberately deviated from (or tuned beyond) the letter of a request,
 and why. Newest at the bottom.
 
+## Vent haze scope (2026-08-18)
+
+You asked for haze where "a vein terminates into empty space." I also gave it to the
+other vents: incarnation frontiers (an unfinished vein leaks at its growing tip) and
+unattached organ ports — the demo's rad port had been silently dumping every freed
+radical into the void with zero visual evidence, which undermined the
+every-vent-is-visible rule. Same haze, same rate scaling, everywhere fluid leaves the
+network.
+
 ## Theming pass (flesh cavity, 2026-08-17)
 
 - ~~**"Fluid stops flowing through that point" during organ budding → I made upstream

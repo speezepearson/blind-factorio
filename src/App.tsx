@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_RADICALS, buildChemistry, tempOf } from './chem';
 import type { Parcel } from './chem';
 import {
-  doTick, ensureHist, eraseNear, organAt, snapshotWorld, sourceAt, tryBud, commitVein, resolveAttach,
+  doTick, ensureHist, eraseNear, eraseSpan, extendVeinHead, extendVeinTail, organAt, snapshotWorld,
+  sourceAt, tryBud, commitVein, resolveAttach, uniteVeins, veinSpanAt,
 } from './world';
-import type { Head, Tail, World } from './world';
+import type { Head, Tail, Vein, World } from './world';
 import { R_SNAP, WORLD_H, WORLD_W, dist, resample, smooth } from './geom';
 import type { Pt } from './geom';
 import { drawWorld } from './render';
@@ -51,6 +52,8 @@ export default function App() {
   probesRef.current = probes;
   const dragRef = useRef<DragState>(null);
   const dragHeadRef = useRef<Head>({ type: 'open' });
+  const dragExtendRef = useRef<number | null>(null); // vein whose open tail this stroke continues
+  const eraseHoverRef = useRef<{ veinId: number; i0: number; i1: number } | null>(null);
   const nextProbeId = useRef(1);
 
   const flashMsg = (msg: string) => {
@@ -106,6 +109,7 @@ export default function App() {
           tempOverlay: overlayRef.current,
           drag: dragRef.current,
           probes: probesRef.current,
+          eraseHover: eraseHoverRef.current,
           phase: worldRef.current.tick + Math.max(0, Math.min(1, acc)),
           timeMs: now,
         });
@@ -219,10 +223,22 @@ export default function App() {
       return;
     }
     if (toolRef.current === 'erase') {
+      // shift-click: sever the whole junction-to-junction stretch at once
+      if (e.shiftKey) {
+        const span = veinSpanAt(w, pt);
+        if (span) {
+          checkpoint();
+          eraseSpan(w, span.vein.id, span.i0, span.i1);
+          setProbes((ps) => ps.filter((pr) => w.nodeHash.nearest([pr.x, pr.y], R_SNAP) !== null));
+          eraseHoverRef.current = null;
+        }
+        return;
+      }
       dragRef.current = { kind: 'erase', pts: [pt] };
       return;
     }
     // draw: what does this vein grow out of?
+    dragExtendRef.current = null;
     let head: Head = { type: 'open' };
     const src = sourceAt(w, pt);
     const oc = organAt(w, pt);
@@ -241,17 +257,42 @@ export default function App() {
       flashMsg("can't start a vein on an organ body");
       return;
     } else {
-      const ref = w.nodeHash.nearest(pt, R_SNAP);
-      if (ref) head = { type: 'fork', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
+      // an open TAIL endpoint within reach snaps: the stroke continues that
+      // vein (no fork, no 50/50 split); otherwise a nearby node forks
+      let bestD = R_SNAP + 1e-9;
+      for (const p of w.veins.values()) {
+        if (p.tail.type !== 'open') continue;
+        const d = dist(p.pts[p.pts.length - 1], pt);
+        if (d < bestD) {
+          bestD = d;
+          dragExtendRef.current = p.id;
+        }
+      }
+      if (dragExtendRef.current === null) {
+        const ref = w.nodeHash.nearest(pt, R_SNAP);
+        if (ref) head = { type: 'fork', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
+      }
     }
     dragHeadRef.current = head;
-    dragRef.current = { kind: 'draw', pts: head.type === 'open' ? [pt] : [] };
+    dragRef.current = { kind: 'draw', pts: head.type === 'open' && dragExtendRef.current === null ? [pt] : [] };
   };
 
   const onMouseMove = (e: React.MouseEvent) => {
     const dr = dragRef.current;
-    if (!dr) return;
     const pt = ptAt(e);
+    // erase + shift hover: preview the junction-to-junction stretch a
+    // shift-click would sever
+    if (!dr && toolRef.current === 'erase') {
+      if (pt && e.shiftKey) {
+        const span = veinSpanAt(worldRef.current, pt);
+        eraseHoverRef.current = span ? { veinId: span.vein.id, i0: span.i0, i1: span.i1 } : null;
+      } else {
+        eraseHoverRef.current = null;
+      }
+    } else if (eraseHoverRef.current) {
+      eraseHoverRef.current = null;
+    }
+    if (!dr) return;
     if (!pt) return;
     const w = worldRef.current;
     if (dr.kind === 'erase') {
@@ -273,9 +314,26 @@ export default function App() {
     dr.pts.push(pt);
   };
 
+  // the nearest vein whose OPEN HEAD endpoint is within snap range of pt
+  const openHeadNear = (w: World, pt: Pt, excludeId?: number): Vein | null => {
+    let best: Vein | null = null;
+    let bd = R_SNAP + 1e-9;
+    for (const p of w.veins.values()) {
+      if (p.id === excludeId || p.head.type !== 'open') continue;
+      const d = dist(p.pts[0], pt);
+      if (d < bd) {
+        bd = d;
+        best = p;
+      }
+    }
+    return best;
+  };
+
   const endDrag = () => {
     const dr = dragRef.current;
     dragRef.current = null;
+    const extendId = dragExtendRef.current;
+    dragExtendRef.current = null;
     if (!dr) return;
     const w = worldRef.current;
     if (dr.kind === 'erase') {
@@ -287,12 +345,56 @@ export default function App() {
       return;
     }
     let pts = resample(smooth(dr.pts));
+
+    // started on a vein's open tail: the stroke CONTINUES that vein
+    const extend = extendId !== null ? w.veins.get(extendId) : undefined;
+    if (extend && extend.tail.type === 'open') {
+      const joinPt = extend.pts[extend.pts.length - 1];
+      while (pts.length && dist(pts[0], joinPt) < 8) pts.shift();
+      if (pts.length === 0) return; // a bare click on the tail: nothing to add
+      const last = pts[pts.length - 1];
+      if (dr.endOrganIn !== undefined) {
+        checkpoint();
+        extendVeinTail(w, extend, pts, { type: 'organ-in', organId: dr.endOrganIn });
+        return;
+      }
+      // bridging into another vein's open head fuses all three into one
+      const headVein = openHeadNear(w, last, extend.id);
+      if (headVein) {
+        while (pts.length && dist(pts[pts.length - 1], headVein.pts[0]) < 8) pts.pop();
+        checkpoint();
+        uniteVeins(w, extend, pts, headVein);
+        return;
+      }
+      let tail: Tail = { type: 'open' };
+      const ref = w.nodeHash.nearest(last, R_SNAP);
+      if (ref && ref.vein.id !== extend.id) tail = { type: 'merge', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
+      checkpoint();
+      extendVeinTail(w, extend, pts, tail);
+      return;
+    }
+
     let tail: Tail = { type: 'open' };
+    let prependTo: Vein | null = null;
     if (dr.endOrganIn !== undefined) tail = { type: 'organ-in', organId: dr.endOrganIn };
     else if (pts.length >= 2) {
-      // releasing on an existing vein merges into it
-      const ref = w.nodeHash.nearest(pts[pts.length - 1], R_SNAP);
-      if (ref) tail = { type: 'merge', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
+      const last = pts[pts.length - 1];
+      // ending on a vein's open HEAD feeds it: the stroke becomes its new
+      // upstream portion (endpoint snap beats mid-vein merge)
+      const hv = openHeadNear(w, last);
+      if (hv && !(dragHeadRef.current.type === 'fork' && dragHeadRef.current.veinId === hv.id)) {
+        prependTo = hv;
+      } else {
+        const ref = w.nodeHash.nearest(last, R_SNAP);
+        if (ref) tail = { type: 'merge', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
+      }
+    }
+    if (prependTo) {
+      while (pts.length && dist(pts[pts.length - 1], prependTo.pts[0]) < 8) pts.pop();
+      if (pts.length === 0) return;
+      checkpoint();
+      extendVeinHead(w, prependTo, pts, dragHeadRef.current);
+      return;
     }
     if (pts.length < 2) {
       // a zero-movement click (e.g. half of a bud double-click) stays
@@ -506,14 +608,18 @@ export default function App() {
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={endDrag}
-            onMouseLeave={endDrag}
+            onMouseLeave={() => {
+              endDrag();
+              eraseHoverRef.current = null;
+            }}
             onDoubleClick={onDblClick}
             onContextMenu={onContextMenu}
           />
           <p className="hint">
-            drag freehand from a colored <b>source</b> to lay a fed vein · start on a vein to <b>fork</b> (50/50) ·
-            release on a vein to <b>merge</b>, or in an organ's <b>in</b> port to feed it · <b>double-click</b> a
-            vein to bud an organ
+            drag freehand from a colored <b>source</b> to lay a fed vein · start on a vein to <b>fork</b> (50/50) —
+            starting on a loose end <b>extends</b> it instead · release on a vein to <b>merge</b>, on a loose start to
+            <b> fuse</b>, or in an organ's <b>in</b> port to feed it · <b>double-click</b> a vein to bud an organ ·
+            in erase mode, <b>shift-click</b> severs a whole stretch
             {godMode ? (
               <>
                 {' '}

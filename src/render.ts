@@ -1,7 +1,7 @@
 import { fluidRGB, speciesColor, tempOf, T_AMB, SCALE } from './chem';
 import { GROW_TICKS, INC_PERIOD, organGrown, resolveAttach } from './world';
 import type { Vein, World } from './world';
-import { PORT_R, SRC_R, WORLD_H, WORLD_W, posAt } from './geom';
+import { PORT_R, SRC_R, WORLD_H, WORLD_W, dist, posAt } from './geom';
 import type { Pt } from './geom';
 
 // The view layer: a torn-open cavity in some vast biological machine. The
@@ -23,6 +23,7 @@ export interface ViewState {
   tempOverlay: boolean;
   drag: DragState;
   probes: Array<{ x: number; y: number }>;
+  eraseHover: { veinId: number; i0: number; i1: number } | null; // shift-erase preview span
   phase: number; // continuous tick: world.tick + sub-tick fraction
   timeMs: number; // wall clock, for sim-speed-independent ambience
 }
@@ -121,6 +122,57 @@ function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number, t: 
   v.addColorStop(1, 'rgba(0,0,0,0.42)');
   ctx.fillStyle = v;
   ctx.fillRect(0, 0, W, H);
+}
+
+// ---- vent haze -------------------------------------------------------------
+// Wherever fluid leaves the network — an open tail, an incarnation
+// frontier, an unattached organ port — a fuzzy cloud of its own light hangs
+// in the cavity, area ∝ the venting rate.
+
+function drawHaze(ctx: CanvasRenderingContext2D, pt: Pt, dir: Pt | null, rgb: [number, number, number], rate: number, t: number): void {
+  const r = (7 + 24 * Math.sqrt(Math.min(2.5, rate / SCALE))) * (1 + 0.07 * Math.sin(t * 1.6 + pt[0] * 0.13));
+  const cx = pt[0] + (dir ? dir[0] * r * 0.45 : 0);
+  const cy = pt[1] + (dir ? dir[1] * r * 0.45 : 0);
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  grad.addColorStop(0, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.36)`);
+  grad.addColorStop(0.55, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.16)`);
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawVents(ctx: CanvasRenderingContext2D, view: ViewState): void {
+  const w = view.world;
+  const chem = w.chem;
+  const t = view.timeMs / 1000;
+  const norm = (from: Pt, to: Pt): Pt | null => {
+    const d = dist(from, to);
+    return d > 1e-6 ? [(to[0] - from[0]) / d, (to[1] - from[1]) / d] : null;
+  };
+  for (const p of w.veins.values()) {
+    const n = p.pts.length;
+    for (let i = 0; i < n; i++) {
+      if (!p.inc[i]) continue;
+      const venting = i === n - 1 ? p.tail.type === 'open' : p.inc[i + 1] === 0;
+      if (!venting || p.flow[i] < SCALE * 0.01) continue;
+      const rgb = fluidRGB(chem, p.parcels[i].c);
+      if (!rgb) continue; // invisible fluid vents invisibly
+      drawHaze(ctx, p.pts[i], i > 0 ? norm(p.pts[i - 1], p.pts[i]) : null, rgb, p.flow[i], t);
+    }
+  }
+  for (const o of w.organs.values()) {
+    if (!organGrown(o)) continue;
+    const port = (vent: { rate: number; c: Int32Array } | null, pt: Pt) => {
+      if (!vent || vent.rate < SCALE * 0.01) return;
+      const rgb = fluidRGB(chem, vent.c);
+      if (!rgb) return;
+      drawHaze(ctx, pt, norm(o.c, pt), rgb, vent.rate, t);
+    };
+    port(o.ventOut, o.portOut);
+    port(o.ventSide, o.portSide);
+  }
 }
 
 // ---- veins ---------------------------------------------------------------
@@ -379,6 +431,9 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     }
   }
 
+  // haze of escaping fluid hangs behind everything structural
+  drawVents(ctx, view);
+
   // stations where fluid is *made* rather than passed along (merge targets)
   // render pinned-static — their color boundary belongs to the station
   const pinned = new Set<string>();
@@ -389,6 +444,21 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
     }
   }
   for (const p of w.veins.values()) drawVein(ctx, view, p, pinned);
+
+  // shift-erase hover: the doomed junction-to-junction stretch glows red
+  if (view.eraseHover) {
+    const p = w.veins.get(view.eraseHover.veinId);
+    if (p) {
+      const n = p.pts.length;
+      const i0 = Math.max(0, Math.min(n - 1, view.eraseHover.i0));
+      const i1 = Math.max(0, Math.min(n - 1, view.eraseHover.i1));
+      ctx.save();
+      ctx.shadowColor = '#ff5040';
+      ctx.shadowBlur = 14;
+      strokeSeg(ctx, p.pts, Math.max(0, i0 - 0.4), Math.min(n - 1, i1 + 0.4), 7, 'rgba(255,84,64,0.85)');
+      ctx.restore();
+    }
+  }
 
   // sources: wellheads in the cavity wall, painted with their fluid's light
   for (const s of w.sources) {

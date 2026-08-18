@@ -80,6 +80,10 @@ export interface Organ {
   growth: number; // ticks grown; >= GROW_TICKS = fully incarnate
   pending: { upId: number; downId: number | null } | null; // halves awaiting the completion trim
   load: number; // smoothed input radicals/tick (drives the heartbeat pulse)
+  // view-only vent trackers: what an unattached port is spraying into the
+  // cavity (smoothed rate + last composition), so the haze can show it
+  ventOut: { rate: number; c: Int32Array } | null;
+  ventSide: { rate: number; c: Int32Array } | null;
 }
 
 export const organGrown = (o: Organ) => o.growth >= GROW_TICKS;
@@ -446,8 +450,18 @@ function completeBud(w: World, o: Organ): void {
 // in proportion to the radicals each stream carries.
 function organProcess(w: World, o: Organ): void {
   const chem = w.chem;
+  // unconsumed previous output vents — note it for the haze before dropping
+  const note = (slot: Parcel | null, prev: Organ['ventOut']): Organ['ventOut'] => {
+    if (slot && totalParticles(chem, slot.c) > 0) {
+      return { rate: (prev?.rate ?? 0) * 0.9 + radCount(chem, slot.c) * 0.1, c: slot.c };
+    }
+    if (prev && prev.rate * 0.9 > 20) return { rate: prev.rate * 0.9, c: prev.c };
+    return null;
+  };
+  o.ventOut = note(o.outReady, o.ventOut);
+  o.ventSide = note(o.sideReady, o.ventSide);
   o.outReady = null;
-  o.sideReady = null; // unconsumed previous output vents
+  o.sideReady = null;
   const inp = o.inAccum;
   o.inAccum = null;
   o.load = o.load * 0.9 + (inp ? radCount(chem, inp.c) : 0) * 0.1;
@@ -555,6 +569,111 @@ export function eraseNear(w: World, brush: Pt[]): void {
     if (p.head.type === 'fork' && !resolveAttach(w, p.head)) p.head = { type: 'open' };
     if (p.tail.type === 'merge' && !resolveAttach(w, p.tail)) p.tail = { type: 'open' };
   }
+}
+
+// ---- endpoint extension & unification ----
+// Starting a stroke on a vein's open tail (or ending one on a vein's open
+// head) EXTENDS that vein rather than forking/merging — no 50/50 split, no
+// stub vent. New nodes are ghosts and incarnate from the join.
+
+// append drawn nodes to a vein's open tail; the vein keeps its id
+export function extendVeinTail(w: World, p: Vein, pts: Pt[], tail: Tail): void {
+  p.pts = [...p.pts, ...pts.map((q) => [q[0], q[1]] as Pt)];
+  p.parcels = [...p.parcels, ...pts.map(() => emptyParcel(w.chem))];
+  p.hist = [...p.hist, ...pts.map(() => null)];
+  p.flow = [...p.flow, ...pts.map(() => 0)];
+  p.inc = [...p.inc, ...pts.map(() => 0)];
+  p.incTick = [...p.incTick, ...pts.map(() => -1)];
+  p.tail = tail;
+  reindex(w);
+}
+
+// prepend drawn nodes to a vein's open head (the stroke feeds it)
+export function extendVeinHead(w: World, p: Vein, pts: Pt[], head: Head): void {
+  p.pts = [...pts.map((q) => [q[0], q[1]] as Pt), ...p.pts];
+  p.parcels = [...pts.map(() => emptyParcel(w.chem)), ...p.parcels];
+  p.hist = [...pts.map(() => null), ...p.hist];
+  p.flow = [...pts.map(() => 0), ...p.flow];
+  p.inc = [...pts.map(() => 0), ...p.inc];
+  p.incTick = [...pts.map(() => -1), ...p.incTick];
+  p.head = head;
+  reindex(w);
+}
+
+// a stroke bridging one vein's open tail to another's open head fuses the
+// three into a single vein (upstream keeps its id; anchors and probes on
+// the absorbed vein heal onto it by proximity)
+export function uniteVeins(w: World, up: Vein, bridge: Pt[], down: Vein): void {
+  up.pts = [...up.pts, ...bridge.map((q) => [q[0], q[1]] as Pt), ...down.pts];
+  up.parcels = [...up.parcels, ...bridge.map(() => emptyParcel(w.chem)), ...down.parcels];
+  up.hist = [...up.hist, ...bridge.map(() => null), ...down.hist];
+  up.flow = [...up.flow, ...bridge.map(() => 0), ...down.flow];
+  up.inc = [...up.inc, ...bridge.map(() => 0), ...down.inc];
+  up.incTick = [...up.incTick, ...bridge.map(() => -1), ...down.incTick];
+  up.tail = down.tail;
+  up.probed = up.probed || down.probed;
+  w.veins.delete(down.id);
+  reindex(w);
+}
+
+// ---- whole-stretch erase (shift-click) ----
+
+// The junction-to-junction span of vein under a point: from the nearest
+// node, extend both ways until the next node some OTHER vein forks from or
+// merges into (exclusive — the junction node survives for its dependents),
+// or the vein's end.
+export function veinSpanAt(w: World, at: Pt): { vein: Vein; i0: number; i1: number } | null {
+  const ref = w.nodeHash.nearest(at, R_SNAP);
+  if (!ref) return null;
+  const p = ref.vein;
+  const junc = new Set<number>();
+  for (const q of w.veins.values()) {
+    if (q.id === p.id) continue;
+    const atts: Array<{ veinId: number; at: Pt }> = [];
+    if (q.head.type === 'fork') atts.push(q.head);
+    if (q.tail.type === 'merge') atts.push(q.tail);
+    for (const att of atts) {
+      const seg = resolveAttach(w, att);
+      if (seg && seg.vein.id === p.id) junc.add(seg.idx);
+    }
+  }
+  let i0 = ref.idx;
+  let i1 = ref.idx;
+  while (i0 - 1 >= 0 && !junc.has(i0 - 1)) i0--;
+  while (i1 + 1 <= p.pts.length - 1 && !junc.has(i1 + 1)) i1++;
+  return { vein: p, i0, i1 };
+}
+
+// sever nodes [i0..i1], keeping junction-anchored remainders as fragments
+export function eraseSpan(w: World, veinId: number, i0: number, i1: number): void {
+  const p = w.veins.get(veinId);
+  if (!p) return;
+  const n = p.pts.length;
+  for (let i = i0; i <= i1 && i < n; i++) if (p.hist[i]) w.histCount--;
+  const frag = (s: number, e: number, head: Head, tail: Tail) => {
+    if (e - s + 1 < 2) {
+      for (let i = s; i <= e; i++) if (p.hist[i]) w.histCount--;
+      return;
+    }
+    const f: Vein = {
+      id: w.nextId++,
+      pts: p.pts.slice(s, e + 1),
+      parcels: p.parcels.slice(s, e + 1),
+      hist: p.hist.slice(s, e + 1),
+      flow: p.flow.slice(s, e + 1),
+      inc: p.inc.slice(s, e + 1),
+      incTick: p.incTick.slice(s, e + 1),
+      head,
+      tail,
+      probed: p.probed,
+    };
+    w.veins.set(f.id, f);
+  };
+  w.veins.delete(p.id);
+  if (i0 > 0) frag(0, i0 - 1, p.head, { type: 'open' });
+  if (i1 < n - 1) frag(i1 + 1, n - 1, { type: 'open' }, p.tail);
+  reindex(w);
+  healAttachments(w);
 }
 
 // Bud an organ on the nearest vein node to `at`: its disc eats the
@@ -667,6 +786,8 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
       growth: instant ? GROW_TICKS : 0,
       pending: null,
       load: 0,
+      ventOut: null,
+      ventSide: null,
     };
     // The bud itself is LOCAL: snip the host once, at the organ's center.
     // Both halves stay intact — their in-disc portions hidden under the
@@ -744,6 +865,8 @@ export function snapshotWorld(w: World): World {
           portOut: [o.portOut[0], o.portOut[1]] as Pt,
           portSide: [o.portSide[0], o.portSide[1]] as Pt,
           pending: o.pending ? { ...o.pending } : null,
+          ventOut: null, // view-only trackers regrow after a restore
+          ventSide: null,
           inAccum: o.inAccum ? cloneParcel(o.inAccum) : null,
           outReady: o.outReady ? cloneParcel(o.outReady) : null,
           sideReady: o.sideReady ? cloneParcel(o.sideReady) : null,

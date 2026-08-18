@@ -205,6 +205,8 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
       sideReady: null,
       growth: GROW_TICKS,
       pending: null,
+      ventOut: null,
+      ventSide: null,
       load: 0,
     };
     w.organs.set(o.id, o);
