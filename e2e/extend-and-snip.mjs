@@ -122,4 +122,52 @@ await ticks(40);
   ok('shift-click removed the whole junction-free vein', info.veins.length === 1 && !info.veins.some((v) => v.head === 'fork'));
 }
 
+// ---- anchor-heal regression: deleting a merge's host must OPEN the
+// dependent's tail, never heal it onto itself (the black-hole bug) ----
+await page.selectOption('select', 'blank');
+await page.waitForTimeout(200);
+await page.click('button:has-text("Draw")'); // the snip block left Erase active
+await drawVein([[26, 42], [160, 42], [300, 42]]); // host H
+await drawVein([[26, 114], [150, 110], [200, 52]]); // M merges into H
+await ticks(60);
+{
+  const info = await worldInfo();
+  ok('heal setup: M merges into H', info.veins.some((v) => v.tail === 'merge'));
+}
+// shift-click ON the junction node itself is a no-op (junction must survive)
+const juncPt = await page.evaluate(() => {
+  const w = window.__veins.world();
+  const m = [...w.veins.values()].find((v) => v.tail.type === 'merge');
+  const seg = window.__veins.resolveAttach(m.tail);
+  return seg.vein.pts[seg.idx];
+});
+await page.click('button:has-text("Erase")');
+const veinsBefore = (await worldInfo()).veins.length;
+{
+  const p = await at(...juncPt);
+  await page.keyboard.down('Shift');
+  await page.mouse.move(p.x, p.y);
+  await page.mouse.click(p.x, p.y);
+  await page.keyboard.up('Shift');
+}
+ok('shift-click on the junction node itself is a no-op', (await worldInfo()).veins.length === veinsBefore);
+// sever H on both sides of the junction: H fully gone, M's tail heals OPEN
+{
+  const p1 = await at(80, 42);
+  await page.keyboard.down('Shift');
+  await page.mouse.move(p1.x, p1.y);
+  await page.mouse.click(p1.x, p1.y);
+  const p2 = await at(260, 42);
+  await page.mouse.move(p2.x, p2.y);
+  await page.mouse.click(p2.x, p2.y);
+  await page.keyboard.up('Shift');
+}
+await ticks(60);
+{
+  const info = await worldInfo();
+  const m = info.veins.find((v) => v.head === 'source');
+  ok('host fully severed; M tail healed OPEN (no self-merge)', !!m && m.tail === 'open');
+  ok('no black-hole accumulation at the healed tail', !!m && (m.lastTotals.G ?? 0) < 30000);
+}
+
 await finish(d);

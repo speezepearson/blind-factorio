@@ -5,7 +5,7 @@ import {
 } from './chem';
 import type { Chemistry, Parcel } from './chem';
 import {
-  NodeHash, R_CROSS, R_ERASE, R_ORGAN, R_SNAP, SEG, SRC_R, WORLD_H, WORLD_W,
+  NodeHash, PORT_R, R_CROSS, R_ERASE, R_ORGAN, R_SNAP, SEG, SRC_R, WORLD_H, WORLD_W,
   circlePts, dist, resample,
 } from './geom';
 import type { Pt } from './geom';
@@ -23,7 +23,8 @@ import type { Pt } from './geom';
 //        | organ-in (feeds an organ)
 // Fork/merge anchors are POINTS: they resolve to the nearest node of the
 // referenced vein within R_SNAP (healing onto whatever covers the spot if
-// that vein is gone).
+// that vein is gone — but never onto the anchor's own endpoint; see
+// resolveAttach).
 //
 // Organs are DISCS of radius R_ORGAN, grown by budding anywhere on a vein
 // that flows in from outside the disc; the in-disc stretch is eaten and the
@@ -133,12 +134,15 @@ export function reindex(w: World): void {
 export const sourceAt = (w: World, pt: Pt): Source | null =>
   w.sources.find((s) => dist(s.pt, pt) <= SRC_R) ?? null;
 
-// what part of an organ (if any) covers this point — ports win over body
+// What part of an organ (if any) covers this point — ports win over body.
+// A growing organ's ports aren't drawn yet, so they aren't clickable yet
+// either: only the body blob exists.
 export function organAt(w: World, pt: Pt): { organ: Organ; role: 'body' | 'in' | 'out' | 'side' } | null {
   for (const o of w.organs.values()) {
-    if (dist(o.portIn, pt) <= 10) return { organ: o, role: 'in' };
-    if (dist(o.portOut, pt) <= 10) return { organ: o, role: 'out' };
-    if (dist(o.portSide, pt) <= 10) return { organ: o, role: 'side' };
+    if (!organGrown(o)) continue;
+    if (dist(o.portIn, pt) <= PORT_R) return { organ: o, role: 'in' };
+    if (dist(o.portOut, pt) <= PORT_R) return { organ: o, role: 'out' };
+    if (dist(o.portSide, pt) <= PORT_R) return { organ: o, role: 'side' };
   }
   for (const o of w.organs.values()) {
     if (dist(o.c, pt) <= o.r) return { organ: o, role: 'body' };
@@ -173,12 +177,31 @@ export function ensureHist(w: World, vein: Vein, i: number): Float32Array | null
 
 // Resolve a point-anchor to a live node: nearest node of the referenced
 // vein within R_SNAP, else heal onto whatever vein covers the spot.
-export function resolveAttach(w: World, att: { veinId: number; at: Pt }): { vein: Vein; idx: number } | null {
+//
+// `guard` identifies the vein that OWNS the anchor and which of its ends
+// carries it: a fork/merge anchor always sits within snap range of its own
+// endpoint (strokes start/end where they attach), so without the guard,
+// deleting the host would heal the anchor onto the dependent ITSELF — a
+// tail merging into its own last node (an invisible, hazeless black hole
+// accumulating fluid forever) or a head forking off itself. The guard
+// rejects self-resolution near the owning end; healAttachments then opens
+// the anchor honestly. Resolution onto the owner far from that end stays
+// legal — that's a deliberately drawn circulation loop.
+export function resolveAttach(
+  w: World,
+  att: { veinId: number; at: Pt },
+  guard?: { selfId: number; end: 'head' | 'tail' },
+): { vein: Vein; idx: number } | null {
+  const bad = (vein: Vein, idx: number) =>
+    !!guard &&
+    vein.id === guard.selfId &&
+    (guard.end === 'tail' ? idx >= vein.pts.length - 2 : idx <= 1);
   const own = w.veins.get(att.veinId);
   if (own) {
     let best = -1;
     let bd = R_SNAP + 1e-9;
     for (let i = 0; i < own.pts.length; i++) {
+      if (bad(own, i)) continue;
       const d = dist(own.pts[i], att.at);
       if (d < bd) {
         bd = d;
@@ -187,7 +210,7 @@ export function resolveAttach(w: World, att: { veinId: number; at: Pt }): { vein
     }
     if (best >= 0) return { vein: own, idx: best };
   }
-  const ref = w.nodeHash.nearest(att.at, R_SNAP);
+  const ref = w.nodeHash.nearest(att.at, R_SNAP, (r) => bad(r.vein, r.idx));
   if (ref) {
     att.veinId = ref.vein.id;
     return { vein: ref.vein, idx: ref.idx };
@@ -203,8 +226,8 @@ export function resolveAttach(w: World, att: { veinId: number; at: Pt }): { vein
 // every INC_PERIOD ticks, so fronts advance one node per period.
 function growthStep(w: World): void {
   const grow: Array<{ p: Vein; i: number }> = [];
-  const liveAt = (att: { veinId: number; at: Pt }): boolean => {
-    const seg = resolveAttach(w, att);
+  const liveAt = (att: { veinId: number; at: Pt }, guard: { selfId: number; end: 'head' | 'tail' }): boolean => {
+    const seg = resolveAttach(w, att, guard);
     return !!seg && seg.vein.inc[seg.idx] === 1;
   };
   const grownOrgan = (id: number): boolean => {
@@ -224,7 +247,7 @@ function growthStep(w: World): void {
         const h = p.head;
         if (
           h.type === 'source' ||
-          (h.type === 'fork' && liveAt(h)) ||
+          (h.type === 'fork' && liveAt(h, { selfId: p.id, end: 'head' })) ||
           (h.type === 'port' && grownOrgan(h.organId))
         ) {
           grow.push({ p, i });
@@ -233,18 +256,18 @@ function growthStep(w: World): void {
       }
       if (i === last) {
         const t = p.tail;
-        if ((t.type === 'merge' && liveAt(t)) || (t.type === 'organ-in' && grownOrgan(t.organId))) grow.push({ p, i });
+        if ((t.type === 'merge' && liveAt(t, { selfId: p.id, end: 'tail' })) || (t.type === 'organ-in' && grownOrgan(t.organId))) grow.push({ p, i });
       }
     }
   }
   // junction seeds: an incarnate vein end touching a ghost node mid-vein
   for (const q of w.veins.values()) {
     if (q.head.type === 'fork' && q.inc[0] === 1) {
-      const seg = resolveAttach(w, q.head);
+      const seg = resolveAttach(w, q.head, { selfId: q.id, end: 'head' });
       if (seg && !seg.vein.inc[seg.idx]) grow.push({ p: seg.vein, i: seg.idx });
     }
     if (q.tail.type === 'merge' && q.inc[q.pts.length - 1] === 1) {
-      const seg = resolveAttach(w, q.tail);
+      const seg = resolveAttach(w, q.tail, { selfId: q.id, end: 'tail' });
       if (seg && !seg.vein.inc[seg.idx]) grow.push({ p: seg.vein, i: seg.idx });
     }
   }
@@ -298,7 +321,7 @@ export function doTick(w: World): void {
   const headIn = new Map<number, Parcel>();
   for (const p of w.veins.values()) {
     if (p.head.type === 'fork' && p.inc[0]) {
-      const seg = resolveAttach(w, p.head);
+      const seg = resolveAttach(w, p.head, { selfId: p.id, end: 'head' });
       if (seg && seg.vein.inc[seg.idx]) headIn.set(p.id, splitHalf(chem, seg.vein.parcels[seg.idx]));
     }
   }
@@ -334,7 +357,7 @@ export function doTick(w: World): void {
     const out = tailOut.get(p.id);
     if (!out) continue;
     if (p.tail.type === 'merge') {
-      const seg = resolveAttach(w, p.tail);
+      const seg = resolveAttach(w, p.tail, { selfId: p.id, end: 'tail' });
       // a merge target still ghost = the junction isn't built yet: vents
       if (seg && seg.vein.inc[seg.idx]) addInto(chem, seg.vein.parcels[seg.idx], out);
     } else if (p.tail.type === 'organ-in') {
@@ -400,8 +423,8 @@ function deleteVein(w: World, p: Vein): void {
 // attachments whose anchor no longer resolves to any node go open
 function healAttachments(w: World): void {
   for (const p of w.veins.values()) {
-    if (p.head.type === 'fork' && !resolveAttach(w, p.head)) p.head = { type: 'open' };
-    if (p.tail.type === 'merge' && !resolveAttach(w, p.tail)) p.tail = { type: 'open' };
+    if (p.head.type === 'fork' && !resolveAttach(w, p.head, { selfId: p.id, end: 'head' })) p.head = { type: 'open' };
+    if (p.tail.type === 'merge' && !resolveAttach(w, p.tail, { selfId: p.id, end: 'tail' })) p.tail = { type: 'open' };
   }
 }
 
@@ -629,10 +652,14 @@ export function veinSpanAt(w: World, at: Pt): { vein: Vein; i0: number; i1: numb
     if (q.head.type === 'fork') atts.push(q.head);
     if (q.tail.type === 'merge') atts.push(q.tail);
     for (const att of atts) {
-      const seg = resolveAttach(w, att);
+      const guard = { selfId: q.id, end: (att === q.head ? 'head' : 'tail') as 'head' | 'tail' };
+      const seg = resolveAttach(w, att, guard);
       if (seg && seg.vein.id === p.id) junc.add(seg.idx);
     }
   }
+  // clicking the junction node itself is ambiguous (and deleting it would
+  // dangle its dependents): no-op — click a hair to either side
+  if (junc.has(ref.idx)) return null;
   let i0 = ref.idx;
   let i1 = ref.idx;
   while (i0 - 1 >= 0 && !junc.has(i0 - 1)) i0--;
@@ -723,7 +750,8 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
       if (q.head.type === 'fork') checks.push(q.head);
       if (q.tail.type === 'merge') checks.push(q.tail);
       for (const att of checks) {
-        const seg = resolveAttach(w, att);
+        const guard = { selfId: q.id, end: (att === q.head ? 'head' : 'tail') as 'head' | 'tail' };
+        const seg = resolveAttach(w, att, guard);
         if (seg && seg.vein.id === p.id && seg.idx >= a && seg.idx <= b) junction = true;
       }
       if (junction) break;

@@ -1,4 +1,4 @@
-import { GROW_TICKS, commitVein, makeWorld, reindex } from './world';
+import { GROW_TICKS, commitVein, makeWorld, organGrown, reindex } from './world';
 import type { Head, Organ, Tail, World } from './world';
 import type { Chemistry } from './chem';
 import { R_ORGAN, SEG, quant, resample } from './geom';
@@ -13,8 +13,9 @@ import type { Pt } from './geom';
 // rv 2: continuous geometry. Points are stored as integer quarter-pixels
 // (x*4, y*4) — exactly the engine's quantization, so codes round-trip
 // losslessly. rv 1 (the old square-grid format) still imports: cells map
-// to their pixel centers and the curve is resampled (partial incarnation
-// from v1 codes is dropped — they load fully incarnate).
+// to their pixel centers, keeping their 21px spacing (within the engine's
+// tolerance, so old veins advect slightly faster per px than SEG=16 ones);
+// partial incarnation from v1 codes is dropped — they load fully incarnate.
 
 type PtDoc = [number, number]; // quarter-pixel ints
 
@@ -41,6 +42,11 @@ interface OrganDoc {
   in: PtDoc;
   out: PtDoc;
   side: PtDoc;
+  // present only for organs exported mid-growth: ticks grown + the two
+  // snipped host halves (as vein-array indices) awaiting the completion trim
+  g?: number;
+  up?: number;
+  down?: number;
 }
 
 interface WorldDoc {
@@ -90,8 +96,6 @@ async function pipeBytes(bytes: Uint8Array, transform: GenericTransformStream): 
 }
 
 export async function worldToCode(w: World): Promise<string> {
-  // (growing organs export as grown, their untrimmed halves as-is — the
-  // imported organ simply keeps the extra in-disc vein beneath its body)
   const veins = [...w.veins.values()];
   const veinIndex = new Map(veins.map((p, i) => [p.id, i]));
   const organs = [...w.organs.values()];
@@ -123,6 +127,15 @@ export async function worldToCode(w: World): Promise<string> {
       in: enc(o.portIn),
       out: enc(o.portOut),
       side: enc(o.portSide),
+      // mid-growth organs round-trip their growth state so completion (the
+      // membrane trim + port attachment) still happens after import
+      ...(o.pending
+        ? {
+            g: o.growth,
+            up: veinIndex.get(o.pending.upId) ?? -1,
+            ...(o.pending.downId !== null ? { down: veinIndex.get(o.pending.downId) ?? -1 } : {}),
+          }
+        : {}),
     })),
   };
   const bytes = new TextEncoder().encode(JSON.stringify(doc));
@@ -250,6 +263,16 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
       p.tail = { type: 'organ-in', organId: organIds[tail.organId] };
     }
   }
+  // reconnect mid-growth organs to their snipped halves
+  const organDocs = Array.isArray(doc.organs) ? doc.organs : [];
+  [...w.organs.values()].forEach((o, i) => {
+    const od = organDocs[i];
+    if (!od || organGrown(o)) return;
+    const upId = Number.isInteger(od.up) ? veinIds[od.up!] : -1;
+    const downId = od.down !== undefined && Number.isInteger(od.down) ? veinIds[od.down] : null;
+    if (upId > 0) o.pending = { upId, downId: downId !== null && downId > 0 ? downId : null };
+    else o.growth = GROW_TICKS; // halves missing: arrive grown rather than stuck
+  });
   reindex(w);
   chem.setStickiness(stick);
   return w;

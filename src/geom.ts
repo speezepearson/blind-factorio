@@ -45,6 +45,7 @@ export function smooth(pts: Pt[], rounds = 2): Pt[] {
 export function resample(pts: Pt[], step = SEG): Pt[] {
   if (pts.length < 2) return pts.slice();
   const total = pts.slice(1).reduce((a, p, i) => a + dist(pts[i], p), 0);
+  if (!(total > 1e-6)) return [pts[0]]; // degenerate stroke: no arc to walk
   const n = Math.max(1, Math.round(total / step));
   const stride = total / n;
   const out: Pt[] = [pts[0]];
@@ -129,10 +130,11 @@ export class NodeHash<V> {
     return out;
   }
 
-  nearest(pt: Pt, r: number): NodeRef<V> | null {
+  nearest(pt: Pt, r: number, skip?: (ref: NodeRef<V>) => boolean): NodeRef<V> | null {
     let best: NodeRef<V> | null = null;
     let bd = Infinity;
     for (const ref of this.near(pt, r)) {
+      if (skip?.(ref)) continue;
       const d = dist(ref.pt, pt);
       if (d < bd) {
         bd = d;

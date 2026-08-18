@@ -150,7 +150,7 @@ React for the charts. State the loop needs is shadowed in refs. Undo/redo snapsh
 world per gesture via `snapshotWorld` (probe history excluded — it regrows; stickiness
 is chemistry, not world, and is not undoable).
 
-In dev builds `window.__veins` exposes `{world(), chem, tick(), tempOf(parcel)}` — the
+In dev builds `window.__veins` exposes `{world(), chem, tick(), tempOf(parcel), resolveAttach(att)}` — the
 e2e suites use it to fast-forward the sim deterministically and to assert on hidden
 state through the real physics formulas.
 

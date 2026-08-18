@@ -151,11 +151,21 @@ function drawVents(ctx: CanvasRenderingContext2D, view: ViewState): void {
     const d = dist(from, to);
     return d > 1e-6 ? [(to[0] - from[0]) / d, (to[1] - from[1]) / d] : null;
   };
+  // a merge whose target junction hasn't been built yet vents too
+  const tailVents = (p: Vein): boolean => {
+    if (p.tail.type === 'open') return true;
+    if (p.tail.type === 'merge') {
+      const seg = resolveAttach(w, p.tail, { selfId: p.id, end: 'tail' });
+      return !seg || seg.vein.inc[seg.idx] !== 1;
+    }
+    return false;
+  };
   for (const p of w.veins.values()) {
     const n = p.pts.length;
+    const tv = tailVents(p);
     for (let i = 0; i < n; i++) {
       if (!p.inc[i]) continue;
-      const venting = i === n - 1 ? p.tail.type === 'open' : p.inc[i + 1] === 0;
+      const venting = i === n - 1 ? tv : p.inc[i + 1] === 0;
       if (!venting || p.flow[i] < SCALE * 0.01) continue;
       const rgb = fluidRGB(chem, p.parcels[i].c);
       if (!rgb) continue; // invisible fluid vents invisibly
@@ -437,7 +447,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
   const pinned = new Set<string>();
   for (const q of w.veins.values()) {
     if (q.tail.type === 'merge') {
-      const seg = resolveAttach(w, q.tail);
+      const seg = resolveAttach(w, q.tail, { selfId: q.id, end: 'tail' });
       if (seg) pinned.add(seg.vein.id + ':' + seg.idx);
     }
   }

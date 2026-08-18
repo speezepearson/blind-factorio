@@ -187,7 +187,10 @@ export default function App() {
     const added: Probe[] = [];
     for (const ref of byVein.values()) {
       ref.vein.probed = true;
-      ensureHist(w, ref.vein, ref.idx);
+      if (!ensureHist(w, ref.vein, ref.idx)) {
+        flashMsg('probe storage is full — remove some probes');
+        continue;
+      }
       added.push({
         id: nextProbeId.current++,
         veinId: ref.vein.id,
@@ -350,6 +353,9 @@ export default function App() {
     const extend = extendId !== null ? w.veins.get(extendId) : undefined;
     if (extend && extend.tail.type === 'open') {
       const joinPt = extend.pts[extend.pts.length - 1];
+      // seed the resample with the join point so a fast flick can't leave a
+      // wide gap between the old tail and the first new node
+      pts = resample(smooth([joinPt, ...dr.pts]));
       while (pts.length && dist(pts[0], joinPt) < 8) pts.shift();
       if (pts.length === 0) return; // a bare click on the tail: nothing to add
       const last = pts[pts.length - 1];
@@ -361,6 +367,9 @@ export default function App() {
       // bridging into another vein's open head fuses all three into one
       const headVein = openHeadNear(w, last, extend.id);
       if (headVein) {
+        // seed both ends so the bridge meets each vein at ~SEG spacing
+        pts = resample(smooth([joinPt, ...dr.pts, headVein.pts[0]]));
+        while (pts.length && dist(pts[0], joinPt) < 8) pts.shift();
         while (pts.length && dist(pts[pts.length - 1], headVein.pts[0]) < 8) pts.pop();
         checkpoint();
         uniteVeins(w, extend, pts, headVein);
@@ -390,6 +399,8 @@ export default function App() {
       }
     }
     if (prependTo) {
+      // seed the join end so the stroke meets the head at ~SEG spacing
+      pts = resample(smooth([...dr.pts, prependTo.pts[0]]));
       while (pts.length && dist(pts[pts.length - 1], prependTo.pts[0]) < 8) pts.pop();
       if (pts.length === 0) return;
       checkpoint();

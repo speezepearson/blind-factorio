@@ -12,7 +12,7 @@ await pause();
 await drawVein([[26, 42], [220, 130], [420, 200], [640, 190]]);
 await ticks(140); // let the ghost incarnate — budding refuses ghost nodes
 await dblClickPt(420, 200);
-await ticks(12); // organ grows in; its understretch is collected
+await ticks(12); // organ grows in; halves trimmed to the membrane
 const before = await worldInfo();
 ok('built: veins + organ', before.veins.length >= 1 && before.organs.length === 1);
 
