@@ -189,11 +189,14 @@ function drawVents(ctx: CanvasRenderingContext2D, view: ViewState): void {
 
 const widthOf = (f: number) => Math.min(14, 1.6 + 6.8 * Math.sqrt(Math.max(0, f) / SCALE));
 
-function strokeSeg(ctx: CanvasRenderingContext2D, pts: Pt[], t0: number, t1: number, width: number, style: string): void {
+function strokeSeg(
+  ctx: CanvasRenderingContext2D, pts: Pt[], t0: number, t1: number, width: number, style: string,
+  cap: CanvasLineCap = 'round',
+): void {
   if (t1 - t0 < 1e-4) return;
   ctx.strokeStyle = style;
   ctx.lineWidth = width;
-  ctx.lineCap = 'round';
+  ctx.lineCap = cap;
   ctx.lineJoin = 'round';
   ctx.beginPath();
   let [px, py] = posAt(pts, t0);
@@ -211,18 +214,47 @@ function strokeSeg(ctx: CanvasRenderingContext2D, pts: Pt[], t0: number, t1: num
   ctx.stroke();
 }
 
-function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein, pinned: Set<string>): void {
+// peristalsis: a gentle width wave traveling downstream at fluid speed
+const wave = (phase: number, i: number, flow: number) => {
+  const a = 0.18 * Math.min(1, flow / (SCALE * 0.5));
+  return 1 + a * Math.sin(((i - phase) / 5.5) * Math.PI * 2);
+};
+
+const fluidW = (view: ViewState, p: Vein, i: number) =>
+  Math.max(1.2, widthOf(p.flow[i]) * wave(view.phase, i, p.flow[i]));
+
+// What the half-node region around station i currently shows: station i's
+// contents, cross-faded toward the incoming content over the tick where
+// that incoming content is truthfully known (see the comment in drawVein
+// step 3). Null = nothing visible.
+function stationDisplay(
+  view: ViewState, p: Vein, pinned: Set<string>, i: number,
+): { rgb: [number, number, number]; alpha: number } | null {
   const chem = view.world.chem;
+  const frac = Math.max(0, Math.min(1, view.phase - view.world.tick));
+  const cur = fluidRGB(chem, p.parcels[i].c);
+  const isPinned = i === 0 || pinned.has(p.id + ':' + i) || !p.inc[i - 1];
+  const inc = isPinned ? cur : fluidRGB(chem, p.parcels[i - 1].c);
+  if (!cur && !inc) return null;
+  const alpha = (cur ? 1 : 0) * (1 - frac) + (inc ? 1 : 0) * frac;
+  if (alpha < 0.02) return null;
+  const base = cur ?? inc!;
+  const other = inc ?? cur!;
+  const mix = (k: number) => Math.round(base[k] * (1 - frac) + other[k] * frac);
+  return { rgb: [mix(0), mix(1), mix(2)], alpha };
+}
+
+const cssOf = (d: { rgb: [number, number, number] }) => `rgb(${d.rgb[0]},${d.rgb[1]},${d.rgb[2]})`;
+
+// Is station i a live merge target flanked by live vein? Its mixed color
+// then begins AT the station instead of half a node before it.
+const isJunction = (p: Vein, pinned: Set<string>, i: number): boolean =>
+  i > 0 && i < p.pts.length - 1 && p.inc[i - 1] === 1 && p.inc[i] === 1 && pinned.has(p.id + ':' + i);
+
+function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein, pinned: Set<string>): void {
   const pts = p.pts;
   const n = pts.length;
   const phase = view.phase;
-  const frac = Math.max(0, Math.min(1, phase - view.world.tick));
-
-  // peristalsis: a gentle width wave traveling downstream at fluid speed
-  const wave = (i: number, flow: number) => {
-    const a = 0.18 * Math.min(1, flow / (SCALE * 0.5));
-    return 1 + a * Math.sin(((i - phase) / 5.5) * Math.PI * 2);
-  };
 
   // 1) ghost route: a faint dashed thread where walls don't exist yet
   ctx.setLineDash([3, 5]);
@@ -243,7 +275,7 @@ function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein, pinne
     // from ~0 and finish just as the next node begins its own
     return Math.max(0.03, Math.min(1, (phase - p.incTick[i] - 1) / INC_PERIOD));
   };
-  const wallW = (i: number) => Math.max(4.5, widthOf(p.flow[i]) * wave(i, p.flow[i]) + 3);
+  const wallW = (i: number) => Math.max(4.5, widthOf(p.flow[i]) * wave(phase, i, p.flow[i]) + 3);
   for (let i = 0; i < n; i++) {
     if (!p.inc[i]) continue;
     const g = growF(i);
@@ -270,23 +302,28 @@ function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein, pinne
   // incoming content is truthfully known (plain mid-vein: next tick it
   // holds exactly what station i-1 holds now) cross-fades toward it over
   // the tick. Stations where content is *made* rather than passed along —
-  // heads and merge targets — stay pinned-static.
+  // heads and merge targets — stay pinned-static. A merge target's mixed
+  // color moreover begins AT the station, flat-cut; its upstream half-span
+  // keeps the incoming line's color, painted here in vein order so a
+  // later-drawn tributary occludes it like any other overlap.
   for (let i = 0; i < n; i++) {
     if (!p.inc[i]) continue;
-    const cur = fluidRGB(chem, p.parcels[i].c);
-    const isPinned = i === 0 || pinned.has(p.id + ':' + i) || !p.inc[i - 1];
-    const inc = isPinned ? cur : fluidRGB(chem, p.parcels[i - 1].c);
-    if (!cur && !inc) continue;
-    const aCur = cur ? 1 : 0;
-    const aInc = inc ? 1 : 0;
-    const alpha = aCur * (1 - frac) + aInc * frac;
-    if (alpha < 0.02) continue;
-    const base = cur ?? inc!;
-    const other = inc ?? cur!;
-    const mix = (k: number) => Math.round(base[k] * (1 - frac) + other[k] * frac);
-    const wv = Math.max(1.2, widthOf(p.flow[i]) * wave(i, p.flow[i]));
-    ctx.globalAlpha = alpha;
-    strokeSeg(ctx, pts, Math.max(0, i - 0.5), Math.min(n - 1, i + 0.5), wv, `rgb(${mix(0)},${mix(1)},${mix(2)})`);
+    const d = stationDisplay(view, p, pinned, i);
+    if (!d) continue;
+    if (isJunction(p, pinned, i)) {
+      const du = stationDisplay(view, p, pinned, i - 1);
+      if (du) {
+        // upstream color first: its round cap pokes past the node, and the
+        // wider mixed stroke then covers the poke
+        ctx.globalAlpha = du.alpha;
+        strokeSeg(ctx, pts, i - 0.5, i, fluidW(view, p, i - 1), cssOf(du));
+      }
+      ctx.globalAlpha = d.alpha;
+      strokeSeg(ctx, pts, i, i + 0.5, fluidW(view, p, i), cssOf(d), 'butt');
+    } else {
+      ctx.globalAlpha = d.alpha;
+      strokeSeg(ctx, pts, Math.max(0, i - 0.5), Math.min(n - 1, i + 0.5), fluidW(view, p, i), cssOf(d));
+    }
     ctx.globalAlpha = 1;
   }
 
@@ -445,13 +482,32 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
   // stations where fluid is *made* rather than passed along (merge targets)
   // render pinned-static — their color boundary belongs to the station
   const pinned = new Set<string>();
+  const junctions: Array<{ p: Vein; i: number }> = [];
   for (const q of w.veins.values()) {
     if (q.tail.type === 'merge') {
       const seg = resolveAttach(w, q.tail, { selfId: q.id, end: 'tail' });
-      if (seg) pinned.add(seg.vein.id + ':' + seg.idx);
+      if (seg && !pinned.has(seg.vein.id + ':' + seg.idx)) {
+        pinned.add(seg.vein.id + ':' + seg.idx);
+        junctions.push({ p: seg.vein, i: seg.idx });
+      }
     }
   }
   for (const p of w.veins.values()) drawVein(ctx, view, p, pinned);
+
+  // The mixed color's flat cut at each junction, repainted OVER every vein:
+  // the tributary's wall/lumen and fluid cap (drawn after the host) poke
+  // past the node, and only this front may cover them there. The upstream
+  // side is deliberately NOT repainted — it was drawn in vein order, so the
+  // tributary lies over it like any other overlap.
+  for (const { p, i } of junctions) {
+    if (!isJunction(p, pinned, i)) continue;
+    const d = stationDisplay(view, p, pinned, i);
+    if (d) {
+      ctx.globalAlpha = d.alpha;
+      strokeSeg(ctx, p.pts, i, i + 0.5, fluidW(view, p, i), cssOf(d), 'butt');
+      ctx.globalAlpha = 1;
+    }
+  }
 
   // shift-erase hover: the doomed junction-to-junction stretch glows red
   if (view.eraseHover) {

@@ -29,13 +29,14 @@ function buildDemo(chem: Chemistry): World {
     { type: 'open' },
     true,
   )!;
-  // ends beside the trunk; the tail merges into it around (230, 290)
+  // merges into the trunk around (230, 290), terminating exactly on the
+  // junction node (the same invariant player-drawn merges get)
   const mergeAt = trunk.pts.reduce((best, pt) =>
     Math.hypot(pt[0] - 230, pt[1] - 290) < Math.hypot(best[0] - 230, best[1] - 290) ? pt : best,
   );
   commitVein(
     w,
-    curve([44, 114], [120, 140], [180, 220], [mergeAt[0] - 14, mergeAt[1] - 10]),
+    curve([44, 114], [120, 140], [180, 220], [mergeAt[0], mergeAt[1]]),
     { type: 'source', spIdx: G },
     { type: 'merge', veinId: trunk.id, at: [mergeAt[0], mergeAt[1]] },
     true,

@@ -70,7 +70,10 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
   the host parcel), or an organ's **out/side port**; tail to a mid-vein **merge**
   (adds into the host parcel), an organ's **in** port, or nothing (vents).
   Fork/merge/probe anchors are *points*, resolved to the nearest node within R_SNAP
-  and healing onto whatever covers the spot. **Endpoints snap**: a stroke starting on
+  and healing onto whatever covers the spot. A forking or merging stroke is snapped
+  onto its junction: its end node lands exactly on the host node, and the mixed
+  color downstream begins with a flat cut exactly there (the upstream half-span of
+  the junction region keeps the incoming line's color). **Endpoints snap**: a stroke starting on
   a vein's open tail extends that vein (no fork, no split); one ending on an open
   head prepends to it (feeds it); one bridging an open tail to an open head fuses
   the three into a single vein.

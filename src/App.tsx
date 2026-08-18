@@ -347,15 +347,13 @@ export default function App() {
       }
       return;
     }
-    let pts = resample(smooth(dr.pts));
-
     // started on a vein's open tail: the stroke CONTINUES that vein
     const extend = extendId !== null ? w.veins.get(extendId) : undefined;
     if (extend && extend.tail.type === 'open') {
       const joinPt = extend.pts[extend.pts.length - 1];
       // seed the resample with the join point so a fast flick can't leave a
       // wide gap between the old tail and the first new node
-      pts = resample(smooth([joinPt, ...dr.pts]));
+      let pts = resample(smooth([joinPt, ...dr.pts]));
       while (pts.length && dist(pts[0], joinPt) < 8) pts.shift();
       if (pts.length === 0) return; // a bare click on the tail: nothing to add
       const last = pts[pts.length - 1];
@@ -377,47 +375,76 @@ export default function App() {
       }
       let tail: Tail = { type: 'open' };
       const ref = w.nodeHash.nearest(last, R_SNAP);
-      if (ref && ref.vein.id !== extend.id) tail = { type: 'merge', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
+      if (ref && ref.vein.id !== extend.id) {
+        tail = { type: 'merge', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
+        // the appended tail terminates exactly on the junction node — the
+        // stroke can't overshoot (or stop short of) the vein it merges into
+        pts = resample(smooth([joinPt, ...dr.pts, ref.pt]));
+        while (pts.length && dist(pts[0], joinPt) < 8) pts.shift();
+        while (pts.length && dist(pts[pts.length - 1], ref.pt) < 8) pts.pop();
+        pts.push([ref.pt[0], ref.pt[1]]);
+      }
       checkpoint();
       extendVeinTail(w, extend, pts, tail);
       return;
     }
 
-    let tail: Tail = { type: 'open' };
-    let prependTo: Vein | null = null;
-    if (dr.endOrganIn !== undefined) tail = { type: 'organ-in', organId: dr.endOrganIn };
-    else if (pts.length >= 2) {
-      const last = pts[pts.length - 1];
-      // ending on a vein's open HEAD feeds it: the stroke becomes its new
-      // upstream portion (endpoint snap beats mid-vein merge)
-      const hv = openHeadNear(w, last);
-      if (hv && !(dragHeadRef.current.type === 'fork' && dragHeadRef.current.veinId === hv.id)) {
-        prependTo = hv;
-      } else {
-        const ref = w.nodeHash.nearest(last, R_SNAP);
-        if (ref) tail = { type: 'merge', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
-      }
-    }
-    if (prependTo) {
-      // seed the join end so the stroke meets the head at ~SEG spacing
-      pts = resample(smooth([...dr.pts, prependTo.pts[0]]));
-      while (pts.length && dist(pts[pts.length - 1], prependTo.pts[0]) < 8) pts.pop();
-      if (pts.length === 0) return;
-      checkpoint();
-      extendVeinHead(w, prependTo, pts, dragHeadRef.current);
-      return;
-    }
-    if (pts.length < 2) {
-      // a zero-movement click (e.g. half of a bud double-click) stays
-      // silent; a real drawing attempt that connected to something — a
-      // source/fork head, an organ mouth, or a merge release — complains
-      if (dr.pts.length >= 1 && (dragHeadRef.current.type !== 'open' || dr.endOrganIn !== undefined || tail.type === 'merge')) {
+    // a near-zero-movement click (e.g. half of a bud double-click) stays
+    // silent; one that connected to something — a source/fork head or an
+    // organ mouth — complains. Bailing this early also keeps the seeds
+    // below from fabricating a vein out of a jiggled click.
+    if (dr.pts.length < 2) {
+      if (dr.pts.length >= 1 && (dragHeadRef.current.type !== 'open' || dr.endOrganIn !== undefined)) {
         flashMsg('vein too short');
       }
       return;
     }
+    const head = dragHeadRef.current;
+    // a fork sprouts from its host node exactly: seed the resample so the
+    // stroke's first node lands on the junction instead of up to R_SNAP away
+    const seeded = (endPt?: Pt): Pt[] => {
+      const raw: Pt[] = head.type === 'fork' ? [head.at, ...dr.pts] : [...dr.pts];
+      if (endPt) raw.push(endPt);
+      return resample(smooth(raw));
+    };
+    let pts = seeded();
+    let tail: Tail = { type: 'open' };
+    let prependTo: Vein | null = null;
+    if (dr.endOrganIn !== undefined) tail = { type: 'organ-in', organId: dr.endOrganIn };
+    else {
+      const last = pts[pts.length - 1];
+      // ending on a vein's open HEAD feeds it: the stroke becomes its new
+      // upstream portion (endpoint snap beats mid-vein merge)
+      const hv = openHeadNear(w, last);
+      if (hv && !(head.type === 'fork' && head.veinId === hv.id)) {
+        prependTo = hv;
+      } else {
+        const ref = w.nodeHash.nearest(last, R_SNAP);
+        if (ref) {
+          tail = { type: 'merge', veinId: ref.vein.id, at: [ref.pt[0], ref.pt[1]] };
+          // the drawn tail terminates exactly on the junction node — the
+          // stroke can't overshoot (or stop short of) the vein it merges into
+          pts = seeded(ref.pt);
+          while (pts.length && dist(pts[pts.length - 1], ref.pt) < 8) pts.pop();
+          pts.push([ref.pt[0], ref.pt[1]]);
+        }
+      }
+    }
+    if (prependTo) {
+      // seed the join end so the stroke meets the head at ~SEG spacing
+      pts = seeded(prependTo.pts[0]);
+      while (pts.length && dist(pts[pts.length - 1], prependTo.pts[0]) < 8) pts.pop();
+      if (pts.length === 0) return;
+      checkpoint();
+      extendVeinHead(w, prependTo, pts, head);
+      return;
+    }
+    if (pts.length < 2) {
+      flashMsg('vein too short'); // a microscopic stroke merged on release
+      return;
+    }
     checkpoint();
-    commitVein(w, pts, dragHeadRef.current, tail);
+    commitVein(w, pts, head, tail);
   };
 
   const onDblClick = (e: React.MouseEvent) => {
