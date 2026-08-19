@@ -278,6 +278,11 @@ function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein, pinne
   const wallW = (i: number) => Math.max(4.5, widthOf(p.flow[i]) * wave(phase, i, p.flow[i]) + 3);
   for (let i = 0; i < n; i++) {
     if (!p.inc[i]) continue;
+    // the wall shows only where the vein reads empty: where fluid is drawn
+    // (stationDisplay ≠ null, the same predicate as the fluid pass) the
+    // fluid IS the vein. An invisible fluid still reads as an empty,
+    // walled vein — exactly the deception it's designed for.
+    if (stationDisplay(view, p, pinned, i)) continue;
     const g = growF(i);
     const wl = 'rgba(226,200,182,0.5)';
     if (i > 0 && p.inc[i - 1] && growF(i - 1) >= g) strokeSeg(ctx, pts, i - g * 0.5, i, wallW(i), wl);
