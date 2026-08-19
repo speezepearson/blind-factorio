@@ -16,14 +16,20 @@ await ticks(12); // organ grows in; halves trimmed to the membrane
 const before = await worldInfo();
 ok('built: veins + organ', before.veins.length >= 1 && before.organs.length === 1);
 
+// ambient temperature travels in the code (reset it before reimporting so
+// the assertion sees the serialized value, not the still-live chemistry)
+await page.evaluate(() => window.__veins.chem.setAmbient(2.5));
+
 await page.click('button:has-text("Share link")');
 await page.waitForTimeout(300);
 const url = await page.evaluate(() => navigator.clipboard.readText());
 ok('share link copied', url.startsWith(BASE_URL) && url.includes('#world='));
 
+await page.evaluate(() => window.__veins.chem.setAmbient(1));
 await page.goto(url.replace(/^.*#/, BASE_URL + '#'));
 await page.waitForTimeout(800);
 const after = await worldInfo();
+ok('reimport: ambient temperature survives', (await page.evaluate(() => window.__veins.chem.ambient)) === 2.5);
 ok('reimport: same vein count', after.veins.length === before.veins.length);
 ok(
   'reimport: organ survives at the same spot',

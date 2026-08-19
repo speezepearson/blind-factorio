@@ -133,7 +133,9 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
   the chemistry from experiments.
 - **God mode** (checkbox or **G**): probes (right-click a vein) charting per-node
   composition and temperature over time, the temperature overlay, per-radical
-  stickiness sliders, and species labels on sources. Hovering any vein pins two
+  stickiness sliders, an ambient-temperature slider (log scale, 0.05–10; sources
+  emit at ambient and heat leaks toward it, so it's the world's thermostat —
+  shared via codes like stickiness), and species labels on sources. Hovering any vein pins two
   live **cursor charts** in the panel — the hovered node's history, and the
   current composition/temperature profile *along* that vein with a vertical
   line marking the hover point (the node itself gets a dashed ring on the

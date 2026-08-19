@@ -36,6 +36,7 @@ export default function App() {
   const [probes, setProbes] = useState<Probe[]>([]);
   const [flash, setFlash] = useState<string | null>(null);
   const [stick, setStick] = useState({ ...chem.stick });
+  const [ambient, setAmbient] = useState(chem.ambient);
   const [uiTick, setUiTick] = useState(0);
 
   const toolRef = useRef(tool);
@@ -520,6 +521,7 @@ export default function App() {
     worldRef.current = world;
     setProbes([]);
     setStick({ ...chem.stick });
+    setAmbient(chem.ambient);
     setUiTick((t) => t + 1);
   };
 
@@ -576,6 +578,11 @@ export default function App() {
     const next = { ...stick, [r]: v };
     setStick(next);
     chem.setStickiness(next);
+  };
+
+  const setAmbientTo = (v: number) => {
+    setAmbient(v);
+    chem.setAmbient(v);
   };
 
   // debug handle for the e2e suites (dev server only). tempOf is exposed so
@@ -681,6 +688,20 @@ export default function App() {
               <span className="mono">{stick[r.id].toFixed(2)}</span>
             </label>
           ))}
+          {/* log-scale: ambient spans 0.05..10, and the interesting moves
+              are multiplicative (halve it, double it) */}
+          <label className="stick">
+            T&#8734;
+            <input
+              type="range"
+              min={Math.log10(0.05)}
+              max={1}
+              step="any"
+              value={Math.log10(ambient)}
+              onChange={(e) => setAmbientTo(Number((10 ** Number(e.target.value)).toPrecision(3)))}
+            />
+            <span className="mono">{ambient.toFixed(2)}</span>
+          </label>
           <span className="mono dim">tick {w.tick}</span>
         </div>
       )}

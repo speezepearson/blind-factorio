@@ -17,7 +17,7 @@ export const SCALE = 10000; // particles per "part" (source output per tick)
 // thermally invisible — zero capacity, no hidden thermal state — so an
 // empty stretch of vein has no temperature at all (it reads as ambient).
 export const CR = 0.8; // heat capacity per radical
-export const T_AMB = 1.0; // ambient temperature
+export const T_AMB = 1.0; // default ambient temperature
 export const K_ALONG = 0.25; // heat conduction along a vein, per tick
 export const K_CROSS = 0.15; // heat conduction between co-located veins
 export const K_AMB = 0.03; // leak to ambient, per tick
@@ -58,6 +58,10 @@ export interface Chemistry {
   channels: Channel[];
   stick: Record<string, number>; // live stickiness (god-tunable)
   setStickiness(next: Record<string, number>): void;
+  // live ambient temperature (god-tunable): what fluid leaks toward, what
+  // sources emit at, and what an empty parcel reads as
+  ambient: number;
+  setAmbient(T: number): void;
   speciesIndex(name: string): number;
 }
 
@@ -124,6 +128,10 @@ export function buildChemistry(radicals: RadicalDef[]): Chemistry {
     setStickiness(next) {
       for (const r of radicals) stick[r.id] = next[r.id] ?? stick[r.id];
       chem.channels = buildChannels();
+    },
+    ambient: T_AMB,
+    setAmbient(T) {
+      chem.ambient = T;
     },
     speciesIndex(name) {
       return species.indexOf(name);
@@ -193,7 +201,7 @@ export const capOf = (chem: Chemistry, c: Int32Array) => CR * radCount(chem, c);
 // an empty parcel has zero heat capacity: it "reads" as ambient
 export const tempOf = (chem: Chemistry, p: Parcel) => {
   const cap = capOf(chem, p.c);
-  return cap > 0 ? (p.U * EPS) / cap : T_AMB;
+  return cap > 0 ? (p.U * EPS) / cap : chem.ambient;
 };
 
 export function emptyParcel(chem: Chemistry): Parcel {
@@ -202,7 +210,7 @@ export function emptyParcel(chem: Chemistry): Parcel {
 export function sourceParcel(chem: Chemistry, spIdx: number): Parcel {
   const c = new Int32Array(chem.nsp);
   c[spIdx] = SCALE;
-  return { c, U: Math.round((CR * SCALE * chem.radcount[spIdx] * T_AMB) / EPS) };
+  return { c, U: Math.round((CR * SCALE * chem.radcount[spIdx] * chem.ambient) / EPS) };
 }
 export function cloneParcel(p: Parcel): Parcel {
   return { c: new Int32Array(p.c), U: p.U };
@@ -338,7 +346,7 @@ export function ambientLeak(chem: Chemistry, p: Parcel): void {
     return;
   }
   const T = (p.U * EPS) / C;
-  let q = stochRound((K_AMB * (T - T_AMB) * C) / EPS);
+  let q = stochRound((K_AMB * (T - chem.ambient) * C) / EPS);
   if (q > 0) q = Math.min(q, p.U);
   p.U -= q;
   if (p.U < 0) p.U = 0;

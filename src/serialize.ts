@@ -5,10 +5,10 @@ import { R_ORGAN, SEG, quant, resample } from './geom';
 import type { Pt } from './geom';
 
 // World <-> shareable code: JSON, deflated, URL-safe base64. Serializes
-// structure only — vein curves, attachments, organs, and the stickiness
-// table (shared worlds keep their physics). Fluid state, heat, and probe
-// history are not serialized: an imported world starts empty and fills
-// from its sources.
+// structure only — vein curves, attachments, organs, the stickiness
+// table, and the ambient temperature (shared worlds keep their physics).
+// Fluid state, heat, and probe history are not serialized: an imported
+// world starts empty and fills from its sources.
 //
 // rv 2: continuous geometry. Points are stored as integer quarter-pixels
 // (x*4, y*4) — exactly the engine's quantization, so codes round-trip
@@ -52,6 +52,7 @@ interface OrganDoc {
 interface WorldDoc {
   rv: 2;
   stick: Record<string, number>;
+  amb?: number; // ambient temperature; absent in codes from before it was tunable
   veins: VeinDoc[];
   organs: OrganDoc[];
 }
@@ -115,6 +116,7 @@ export async function worldToCode(w: World): Promise<string> {
   const doc: WorldDoc = {
     rv: 2,
     stick: { ...w.chem.stick },
+    amb: w.chem.ambient,
     veins: veins.map((p) => ({
       pts: p.pts.map(enc),
       head: remapHead(p.head),
@@ -193,15 +195,19 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
   if (doc.rv !== 2 || !Array.isArray(doc.veins)) throw new Error('not a recognized world document');
 
   const w = makeWorld(chem);
-  // stickiness is applied at the very end, after everything that can throw
-  // — a rejected code must not leave the live chemistry mutated
+  // stickiness and ambient are applied at the very end, after everything
+  // that can throw — a rejected code must not leave the live chemistry
+  // mutated. Values are clamped to the god sliders' ranges; codes that
+  // predate a knob leave its current setting alone.
   const stick: Record<string, number> = {};
   if (doc.stick && typeof doc.stick === 'object') {
     for (const r of chem.radicals) {
       const v = Number(doc.stick[r.id]);
-      if (Number.isFinite(v)) stick[r.id] = Math.max(0, Math.min(4, v)); // match the god slider's range
+      if (Number.isFinite(v)) stick[r.id] = Math.max(0, Math.min(4, v));
     }
   }
+  const ambRaw = Number(doc.amb);
+  const amb = Number.isFinite(ambRaw) ? Math.max(0.05, Math.min(10, ambRaw)) : null;
 
   const organIds: number[] = [];
   for (const od of Array.isArray(doc.organs) ? doc.organs : []) {
@@ -275,5 +281,6 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
   });
   reindex(w);
   chem.setStickiness(stick);
+  if (amb !== null) chem.setAmbient(amb);
   return w;
 }

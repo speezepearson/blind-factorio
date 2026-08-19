@@ -1,4 +1,4 @@
-import { fluidRGB, speciesColor, tempOf, T_AMB, SCALE } from './chem';
+import { fluidRGB, speciesColor, tempOf, SCALE } from './chem';
 import { GROW_TICKS, INC_PERIOD, organGrown, resolveAttach } from './world';
 import type { Vein, World } from './world';
 import { PORT_R, SRC_R, WORLD_H, WORLD_W, dist, posAt } from './geom';
@@ -479,7 +479,7 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
       for (let i = 0; i < p.pts.length; i++) {
         if (!p.inc[i]) continue;
         const T = tempOf(chem, p.parcels[i]);
-        const d = T - T_AMB;
+        const d = T - chem.ambient;
         if (Math.abs(d) < 0.04) continue;
         const a = Math.min(0.6, Math.abs(d) * 0.45);
         const halo = d > 0 ? `rgba(255,90,50,${a})` : `rgba(70,140,255,${a})`;

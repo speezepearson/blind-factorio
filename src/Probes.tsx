@@ -125,7 +125,7 @@ function paintChart(cv: HTMLCanvasElement, chem: Chemistry, src: ChartSource, cr
     if (tv > maxT) maxT = tv;
   }
   maxC = Math.max(maxC, 1e-6) * 1.05;
-  maxT = Math.max(maxT, 1.3) * 1.05; // keep ambient (T = 1) in view
+  maxT = Math.max(maxT, chem.ambient * 1.3) * 1.05; // keep ambient in view
   const x = (i: number) => L + (iw * i) / (n - 1);
   const yC = (v: number) => T + ih * (1 - v / maxC);
   const yT = (v: number) => T + ih * (1 - v / maxT);
