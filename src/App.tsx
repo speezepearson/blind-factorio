@@ -381,6 +381,15 @@ export default function App() {
       if (pts.length === 0) return; // a bare click on the tail: nothing to add
       const last = pts[pts.length - 1];
       if (dr.endOrganIn !== undefined) {
+        // the stroke terminates exactly on the in port, like a merge does
+        // on its junction node — no visible gap at the membrane
+        const o = w.organs.get(dr.endOrganIn);
+        if (o) {
+          pts = resample(smooth([joinPt, ...dr.pts, o.portIn]));
+          while (pts.length && dist(pts[0], joinPt) < 8) pts.shift();
+          while (pts.length && dist(pts[pts.length - 1], o.portIn) < 8) pts.pop();
+          pts.push([o.portIn[0], o.portIn[1]]);
+        }
         checkpoint();
         extendVeinTail(w, extend, pts, { type: 'organ-in', organId: dr.endOrganIn });
         return;
@@ -423,18 +432,36 @@ export default function App() {
       return;
     }
     const head = dragHeadRef.current;
-    // a fork sprouts from its host node exactly: seed the resample so the
-    // stroke's first node lands on the junction instead of up to R_SNAP away
+    // a fork sprouts from its host node exactly, and a port head from its
+    // port point: seed the resample so the stroke's first node lands on the
+    // anchor instead of up to R_SNAP (or PORT_R) away
+    const headPt: Pt | null =
+      head.type === 'fork'
+        ? head.at
+        : head.type === 'port'
+          ? (() => {
+              const o = w.organs.get(head.organId);
+              return o ? (head.port === 'out' ? o.portOut : o.portSide) : null;
+            })()
+          : null;
     const seeded = (endPt?: Pt): Pt[] => {
-      const raw: Pt[] = head.type === 'fork' ? [head.at, ...dr.pts] : [...dr.pts];
+      const raw: Pt[] = headPt ? [headPt, ...dr.pts] : [...dr.pts];
       if (endPt) raw.push(endPt);
       return resample(smooth(raw));
     };
     let pts = seeded();
     let tail: Tail = { type: 'open' };
     let prependTo: Vein | null = null;
-    if (dr.endOrganIn !== undefined) tail = { type: 'organ-in', organId: dr.endOrganIn };
-    else {
+    if (dr.endOrganIn !== undefined) {
+      tail = { type: 'organ-in', organId: dr.endOrganIn };
+      // terminate exactly on the in port, like a merge on its junction node
+      const o = w.organs.get(dr.endOrganIn);
+      if (o) {
+        pts = seeded(o.portIn);
+        while (pts.length && dist(pts[pts.length - 1], o.portIn) < 8) pts.pop();
+        pts.push([o.portIn[0], o.portIn[1]]);
+      }
+    } else {
       const last = pts[pts.length - 1];
       // ending on a vein's open HEAD feeds it: the stroke becomes its new
       // upstream portion (endpoint snap beats mid-vein merge)

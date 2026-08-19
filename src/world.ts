@@ -428,9 +428,43 @@ function healAttachments(w: World): void {
   }
 }
 
+// Splice fresh empty incarnate nodes onto one end of a vein so it reaches
+// exactly to `target` (usually a port point one node-hop away).
+function bridgeToPoint(w: World, p: Vein, end: 'head' | 'tail', target: Pt): void {
+  const anchor = end === 'head' ? p.pts[0] : p.pts[p.pts.length - 1];
+  if (dist(anchor, target) <= 0.5) return;
+  const stub =
+    end === 'head'
+      ? resample([target, anchor], SEG).slice(0, -1)
+      : resample([anchor, target], SEG).slice(1);
+  const pts = stub.map((q) => [q[0], q[1]] as Pt);
+  const parcels = stub.map(() => emptyParcel(w.chem));
+  const hist = stub.map(() => null);
+  const flow = stub.map(() => 0);
+  const inc = stub.map(() => 1);
+  const incTick = stub.map(() => w.tick);
+  if (end === 'head') {
+    p.pts = [...pts, ...p.pts];
+    p.parcels = [...parcels, ...p.parcels];
+    p.hist = [...hist, ...p.hist];
+    p.flow = [...flow, ...p.flow];
+    p.inc = [...inc, ...p.inc];
+    p.incTick = [...incTick, ...p.incTick];
+  } else {
+    p.pts = [...p.pts, ...pts];
+    p.parcels = [...p.parcels, ...parcels];
+    p.hist = [...p.hist, ...hist];
+    p.flow = [...p.flow, ...flow];
+    p.inc = [...p.inc, ...inc];
+    p.incTick = [...p.incTick, ...incTick];
+  }
+}
+
 // The completion trim: when a budded organ finishes growing, the two host
 // halves (snipped at the organ's center at bud time, hidden under the
 // opaque blob since) are cut back to the membrane and the ports attach.
+// Each surviving half is then extended to end exactly ON its port point,
+// so the drawn vein meets the membrane instead of stopping a node short.
 function completeBud(w: World, o: Organ): void {
   if (!o.pending) return;
   const { upId, downId } = o.pending;
@@ -440,8 +474,10 @@ function completeBud(w: World, o: Organ): void {
   if (up && up.tail.type === 'organ-in' && up.tail.organId === o.id) {
     let e = up.pts.length - 1;
     while (e >= 0 && inDisc(up.pts[e])) e--;
-    if (e + 1 >= 2) trimVein(w, up, 0, e);
-    else deleteVein(w, up); // fully swallowed
+    if (e + 1 >= 2) {
+      trimVein(w, up, 0, e);
+      bridgeToPoint(w, up, 'tail', o.portIn);
+    } else deleteVein(w, up); // fully swallowed
   }
   const down = downId !== null ? w.veins.get(downId) : undefined;
   if (down && down.head.type === 'open') {
@@ -450,18 +486,7 @@ function completeBud(w: World, o: Organ): void {
     if (down.pts.length - s >= 2) {
       trimVein(w, down, s, down.pts.length - 1);
       down.head = { type: 'port', organId: o.id, port: 'out' };
-      // if the trimmed head sits away from the out port (relocated-port
-      // cases), grow a connecting stub of vein out of the port
-      const gap = dist(o.portOut, down.pts[0]);
-      if (gap > SEG * 1.4) {
-        const stub = resample([o.portOut, down.pts[0]], SEG).slice(0, -1);
-        down.pts = [...stub.map((q) => [q[0], q[1]] as Pt), ...down.pts];
-        down.parcels = [...stub.map(() => emptyParcel(w.chem)), ...down.parcels];
-        down.hist = [...stub.map(() => null), ...down.hist];
-        down.flow = [...stub.map(() => 0), ...down.flow];
-        down.inc = [...stub.map(() => 1), ...down.inc];
-        down.incTick = [...stub.map(() => w.tick), ...down.incTick];
-      }
+      bridgeToPoint(w, down, 'head', o.portOut);
     } else deleteVein(w, down);
   }
   reindex(w);

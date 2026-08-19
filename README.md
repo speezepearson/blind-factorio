@@ -73,7 +73,9 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
   and healing onto whatever covers the spot. A forking or merging stroke is snapped
   onto its junction: its end node lands exactly on the host node, and the mixed
   color downstream begins with a flat cut exactly there (the upstream half-span of
-  the junction region keeps the incoming line's color). **Endpoints snap**: a stroke starting on
+  the junction region keeps the incoming line's color). Organ ends snap the same
+  way: a stroke ending in an organ's mouth terminates exactly on the in port, and
+  one growing out of a port sprouts exactly from it. **Endpoints snap**: a stroke starting on
   a vein's open tail extends that vein (no fork, no split); one ending on an open
   head prepends to it (feeds it); one bridging an open tail to an open head fuses
   the three into a single vein.
@@ -112,9 +114,11 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
   immediately covers); both halves stay intact — hidden under the opaque growing
   blob — while the organ swells over GROW_TICKS (10) ticks, swallowing its feed and
   emitting nothing (downstream drains). Only on completion are the halves trimmed
-  back to the membrane and the ports attached. One organ exists so far —
-  the **radical filter** (free radicals out the side port, composites out the main
-  port); its name and side-port label are god-only on the canvas. Budding is
+  back to the membrane and the ports attached, each surviving half extended to end
+  exactly on its port. Ports are unlabeled pigment splotches riding the pulsing
+  membrane — color is their only distinction (green in, blue out, rust side). One
+  organ exists so far — the **radical filter** (free radicals out the side port,
+  composites out the main port); its name is god-only on the canvas. Budding is
   hard-coded; the mixture-determined differentiation grammar is the next design
   milestone.
 - Erasing is a brush: nodes within R_ERASE of the stroke vanish, splitting veins

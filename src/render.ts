@@ -365,18 +365,24 @@ function heartbeat(t: number): number {
   return thump(0.07, 0.045) + 0.45 * thump(0.24, 0.055);
 }
 
+// the wobbling radius of an organic disc at polar angle th
+function blobR(R: number, th: number, t: number, wobble: number): number {
+  return (
+    R *
+    (1 +
+      wobble * 0.14 * Math.sin(3 * th + t * 2.4) +
+      wobble * 0.1 * Math.sin(5 * th - t * 1.7) +
+      wobble * 0.05 * Math.sin(8 * th + t * 3.9))
+  );
+}
+
 // a wobbling organic disc outline
 function blobPath(ctx: CanvasRenderingContext2D, c: Pt, R: number, t: number, wobble: number): void {
   ctx.beginPath();
   const N = 26;
   for (let k = 0; k <= N; k++) {
     const th = (k / N) * Math.PI * 2;
-    const r =
-      R *
-      (1 +
-        wobble * 0.14 * Math.sin(3 * th + t * 2.4) +
-        wobble * 0.1 * Math.sin(5 * th - t * 1.7) +
-        wobble * 0.05 * Math.sin(8 * th + t * 3.9));
+    const r = blobR(R, th, t, wobble);
     const x = c[0] + r * Math.cos(th);
     const y = c[1] + r * 0.94 * Math.sin(th);
     if (k === 0) ctx.moveTo(x, y);
@@ -430,30 +436,30 @@ function drawOrgans(ctx: CanvasRenderingContext2D, view: ViewState): void {
       ctx.fillText('RADICAL', o.c[0], o.c[1] - 5);
       ctx.fillText('FILTER', o.c[0], o.c[1] + 6);
     }
-    ctx.restore();
 
-    // ports sit on the membrane, unscaled (veins attach to them). in/out
-    // are honest anatomy; the side port's function stays unlabeled for
-    // players.
-    const port = (pt: Pt, color: string, label: string | null) => {
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(pt[0], pt[1], PORT_R * 0.85, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      if (label) {
-        ctx.fillStyle = '#fff';
-        ctx.font = '700 8px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(label, pt[0], pt[1] + 0.5);
-      }
+    // ports are pigment splotches ON the membrane: anchored to the wobbling
+    // rim (not the frozen attachment point) and drawn inside the heartbeat
+    // transform, so they pulse with the flesh instead of floating over it
+    // like UI markers. Distinct colors are the only labeling; the side
+    // port's function stays unnamed even for gods.
+    const rimAt = (pt: Pt): Pt => {
+      const th = Math.atan2((pt[1] - o.c[1]) / 0.94, pt[0] - o.c[0]);
+      const r = blobR(o.r, th, t * 0.35, 0.28);
+      return [o.c[0] + r * Math.cos(th), o.c[1] + r * 0.94 * Math.sin(th)];
     };
-    port(o.portIn, '#4a7a52', 'in');
-    port(o.portOut, '#4a5f7a', 'out');
-    port(o.portSide, '#9a5f3a', view.godMode ? 'rad' : null);
+    const splotch = (pt: Pt, rgb: string, seed: number) => {
+      const rp = rimAt(pt);
+      blobPath(ctx, rp, PORT_R * 1.35, t * 0.7 + seed, 0.9);
+      ctx.fillStyle = `rgba(${rgb},0.4)`;
+      ctx.fill();
+      blobPath(ctx, rp, PORT_R * 0.85, t * 0.9 + seed * 1.7, 0.8);
+      ctx.fillStyle = `rgb(${rgb})`;
+      ctx.fill();
+    };
+    splotch(o.portIn, '74,122,82', o.id * 0.9 + 1);
+    splotch(o.portOut, '74,95,122', o.id * 0.9 + 4);
+    splotch(o.portSide, '154,95,58', o.id * 0.9 + 7);
+    ctx.restore();
   }
 }
 
