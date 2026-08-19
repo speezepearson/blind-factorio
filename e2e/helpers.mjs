@@ -35,7 +35,8 @@ export async function launch(hash = '') {
   await page.goto(BASE_URL + hash);
   await page.waitForTimeout(800);
 
-  const canvas = page.locator('canvas');
+  // the world canvas specifically — probe charts are canvases too
+  const canvas = page.locator('.stage canvas');
   const at = async (x, y) => {
     const box = await canvas.boundingBox();
     return { x: box.x + (x / WORLD_W) * box.width, y: box.y + (y / WORLD_H) * box.height };
