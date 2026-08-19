@@ -8,6 +8,7 @@ const { page, rightClickPt } = d;
 // player view (default)
 ok('player: no probe tool', (await page.locator('button:has-text("Probe")').count()) === 0);
 ok('player: no temp overlay button', (await page.locator('button:has-text("Temp")').count()) === 0);
+ok('player: no streams toggle', (await page.locator('button:has-text("Streams")').count()) === 0);
 ok('player: no stickiness sliders', (await page.locator('.stickrow').count()) === 0);
 ok('player: field notes shown', /lossy projection/.test(await page.locator('.panel').innerText()));
 
@@ -27,6 +28,7 @@ ok('player: right-click adds no probe', !/·vein|\(\d+,\d+\)/.test(await page.lo
 await page.keyboard.press('g');
 await page.waitForTimeout(200);
 ok('god: probe tool appears', (await page.locator('button:has-text("Probe")').count()) === 1);
+ok('god: streams toggle appears', (await page.locator('button:has-text("Streams")').count()) === 1);
 ok('god: stickiness sliders appear', (await page.locator('.stickrow').count()) === 1);
 await rightClickPt(...spot);
 await page.waitForTimeout(400);

@@ -29,6 +29,8 @@ export default function App() {
   const [running, setRunning] = useState(true);
   const [tps, setTps] = useState(4);
   const [tempOverlay, setTempOverlay] = useState(false);
+  // god-only species-streams view: parallel per-species ribbons on the veins
+  const [streams, setStreams] = useState(false);
   // God mode = the designer's view: probes, temperature, stickiness,
   // labels. Off (the default) = the player's view: color, width, and flow
   // direction are the only windows into the chemistry.
@@ -47,6 +49,8 @@ export default function App() {
   tpsRef.current = tps;
   const overlayRef = useRef(tempOverlay);
   overlayRef.current = tempOverlay;
+  const streamsRef = useRef(streams);
+  streamsRef.current = streams;
   const godModeRef = useRef(godMode);
   godModeRef.current = godMode;
   const probesRef = useRef(probes);
@@ -123,6 +127,7 @@ export default function App() {
           world: worldRef.current,
           godMode: godModeRef.current,
           tempOverlay: overlayRef.current,
+          streams: streamsRef.current,
           drag: dragRef.current,
           probes: probesRef.current,
           eraseHover: eraseHoverRef.current,
@@ -638,6 +643,15 @@ export default function App() {
         {godMode && (
           <button className={tempOverlay ? 'active' : ''} onClick={() => setTempOverlay((v) => !v)}>
             Temp
+          </button>
+        )}
+        {godMode && (
+          <button
+            className={streams ? 'active' : ''}
+            onClick={() => setStreams((v) => !v)}
+            title="one ribbon per species, width ∝ count"
+          >
+            Streams
           </button>
         )}
         <button disabled={undoRef.current.length === 0} onClick={undo} title="Ctrl+Z">

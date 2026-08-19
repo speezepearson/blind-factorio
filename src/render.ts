@@ -1,4 +1,5 @@
 import { fluidRGB, speciesColor, tempOf, SCALE } from './chem';
+import type { Chemistry } from './chem';
 import { GROW_TICKS, INC_PERIOD, organGrown, resolveAttach } from './world';
 import type { Vein, World } from './world';
 import { PORT_R, SRC_R, WORLD_H, WORLD_W, dist, posAt } from './geom';
@@ -21,6 +22,7 @@ export interface ViewState {
   world: World;
   godMode: boolean;
   tempOverlay: boolean;
+  streams: boolean; // god-only: per-species parallel ribbons instead of the blended fluid
   drag: DragState;
   probes: Array<{ x: number; y: number }>;
   eraseHover: { veinId: number; i0: number; i1: number } | null; // shift-erase preview span
@@ -252,6 +254,94 @@ const cssOf = (d: { rgb: [number, number, number] }) => `rgb(${d.rgb[0]},${d.rgb
 const isJunction = (p: Vein, pinned: Set<string>, i: number): boolean =>
   i > 0 && i < p.pts.length - 1 && p.inc[i - 1] === 1 && p.inc[i] === 1 && pinned.has(p.id + ':' + i);
 
+// God's spectroscope: every species rides its own parallel ribbon along the
+// vein, width ∝ its particle count (linear — one full part = STREAM_W px,
+// with a visibility floor). The stack is centered on the vein path in
+// species order, so lanes are stable and R+G — identical to the player's
+// blended eye — visibly separates from fused RG.
+const STREAM_W = 8;
+
+// per-frame scratch + a species-CSS memo: this runs at rAF frequency, and
+// sustained small allocations are exactly the committed-heap churn that
+// OOMed the tab before (see Probes.tsx) — so no garbage on this path
+let snx = new Float64Array(0);
+let sny = new Float64Array(0);
+const speciesCss = new WeakMap<Chemistry, string[]>();
+
+function drawStreams(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein): void {
+  const chem = view.world.chem;
+  const n = p.pts.length;
+  const nsp = chem.nsp;
+  let css = speciesCss.get(chem);
+  if (!css) {
+    css = Array.from({ length: nsp }, (_, k) => speciesColor(chem, k));
+    speciesCss.set(chem, css);
+  }
+  // unit normals per node, perpendicular to the local direction
+  if (snx.length < n) {
+    snx = new Float64Array(n);
+    sny = new Float64Array(n);
+  }
+  const nx = snx;
+  const ny = sny;
+  for (let i = 0; i < n; i++) {
+    const a = p.pts[Math.max(0, i - 1)];
+    const b = p.pts[Math.min(n - 1, i + 1)];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const m = Math.hypot(dx, dy) || 1;
+    nx[i] = -dy / m;
+    ny[i] = dx / m;
+  }
+  const wOf = (i: number, k: number) => {
+    const c = p.parcels[i].c[k];
+    return c > 0 ? Math.max(0.8, (c / SCALE) * STREAM_W) : 0;
+  };
+  // maximal runs of consecutive incarnate nodes; within each, one filled
+  // ribbon per species, pinching to zero wherever the count does
+  let s = 0;
+  while (s < n) {
+    if (!p.inc[s]) {
+      s++;
+      continue;
+    }
+    let e = s;
+    while (e + 1 < n && p.inc[e + 1]) e++;
+    for (let k = 0; k < nsp; k++) {
+      let present = false;
+      for (let i = s; i <= e; i++) if (p.parcels[i].c[k] > 0) present = true;
+      if (!present) continue;
+      ctx.beginPath();
+      for (let i = s; i <= e; i++) {
+        let lo = 0;
+        for (let j = 0; j < nsp; j++) lo += wOf(i, j);
+        lo = -lo / 2;
+        for (let j = 0; j < k; j++) lo += wOf(i, j);
+        const hi = lo + wOf(i, k);
+        const x = p.pts[i][0] + nx[i] * hi;
+        const y = p.pts[i][1] + ny[i] * hi;
+        if (i === s) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      for (let i = e; i >= s; i--) {
+        let lo = 0;
+        for (let j = 0; j < nsp; j++) lo += wOf(i, j);
+        lo = -lo / 2;
+        for (let j = 0; j < k; j++) lo += wOf(i, j);
+        ctx.lineTo(p.pts[i][0] + nx[i] * lo, p.pts[i][1] + ny[i] * lo);
+      }
+      ctx.closePath();
+      ctx.fillStyle = css[k];
+      ctx.fill();
+      // a hairline seam so neighboring ribbons of kindred hue stay distinct
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+    }
+    s = e + 1;
+  }
+}
+
 function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein, pinned: Set<string>): void {
   const pts = p.pts;
   const n = pts.length;
@@ -312,29 +402,41 @@ function drawVein(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein, pinne
   // color moreover begins AT the station, flat-cut; its upstream half-span
   // keeps the incoming line's color, painted here in vein order so a
   // later-drawn tributary occludes it like any other overlap.
-  for (let i = 0; i < n; i++) {
-    if (!p.inc[i]) continue;
-    const d = stationDisplay(view, p, pinned, i);
-    if (!d) continue;
-    if (isJunction(p, pinned, i)) {
-      const du = stationDisplay(view, p, pinned, i - 1);
-      if (du) {
-        // upstream color first: its round cap pokes past the node, and the
-        // wider mixed stroke then covers the poke
-        ctx.globalAlpha = du.alpha;
-        strokeSeg(ctx, pts, i - 0.5, i, fluidW(view, p, i - 1), cssOf(du));
+  // In the species-streams view the ribbons are painted in a global pass
+  // AFTER every vein's structure, so no vein's dark lumen can sit on top of
+  // another's ribbons at a junction.
+  if (!(view.godMode && view.streams)) {
+    for (let i = 0; i < n; i++) {
+      if (!p.inc[i]) continue;
+      const d = stationDisplay(view, p, pinned, i);
+      if (!d) continue;
+      if (isJunction(p, pinned, i)) {
+        const du = stationDisplay(view, p, pinned, i - 1);
+        if (du) {
+          // upstream color first: its round cap pokes past the node, and the
+          // wider mixed stroke then covers the poke
+          ctx.globalAlpha = du.alpha;
+          strokeSeg(ctx, pts, i - 0.5, i, fluidW(view, p, i - 1), cssOf(du));
+        }
+        ctx.globalAlpha = d.alpha;
+        strokeSeg(ctx, pts, i, i + 0.5, fluidW(view, p, i), cssOf(d), 'butt');
+      } else {
+        ctx.globalAlpha = d.alpha;
+        strokeSeg(ctx, pts, Math.max(0, i - 0.5), Math.min(n - 1, i + 0.5), fluidW(view, p, i), cssOf(d));
       }
-      ctx.globalAlpha = d.alpha;
-      strokeSeg(ctx, pts, i, i + 0.5, fluidW(view, p, i), cssOf(d), 'butt');
-    } else {
-      ctx.globalAlpha = d.alpha;
-      strokeSeg(ctx, pts, Math.max(0, i - 0.5), Math.min(n - 1, i + 0.5), fluidW(view, p, i), cssOf(d));
+      ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 1;
-  }
 
-  // 4) drifting direction chevrons, riding the flow — only where there IS
-  // flow (a dry vein gives no direction hint until fluid moves through it)
+    drawChevrons(ctx, view, p);
+  }
+}
+
+// drifting direction chevrons, riding the flow — only where there IS flow
+// (a dry vein gives no direction hint until fluid moves through it)
+function drawChevrons(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein): void {
+  const pts = p.pts;
+  const n = pts.length;
+  const phase = view.phase;
   ctx.fillStyle = 'rgba(240,235,228,0.5)';
   const step = 4;
   for (let base = 1 + ((phase % step) + step) % step; base < n - 0.5; base += step) {
@@ -506,12 +608,20 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
   }
   for (const p of w.veins.values()) drawVein(ctx, view, p, pinned);
 
+  // species-streams view: all ribbons above all structure (a vein's dark
+  // lumen must never cover another's ribbons at a junction), chevrons on top
+  if (view.godMode && view.streams) {
+    for (const p of w.veins.values()) drawStreams(ctx, view, p);
+    for (const p of w.veins.values()) drawChevrons(ctx, view, p);
+  }
+
   // The mixed color's flat cut at each junction, repainted OVER every vein:
   // the tributary's wall/lumen and fluid cap (drawn after the host) poke
   // past the node, and only this front may cover them there. The upstream
   // side is deliberately NOT repainted — it was drawn in vein order, so the
-  // tributary lies over it like any other overlap.
-  for (const { p, i } of junctions) {
+  // tributary lies over it like any other overlap. (Moot in the species-
+  // streams view, which draws no blended color at all.)
+  for (const { p, i } of view.godMode && view.streams ? [] : junctions) {
     if (!isJunction(p, pinned, i)) continue;
     const d = stationDisplay(view, p, pinned, i);
     if (d) {
