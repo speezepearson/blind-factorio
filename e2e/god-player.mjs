@@ -35,6 +35,21 @@ await page.waitForTimeout(400);
   ok('god: right-click probes the vein', /#1 \(\d+,\d+\)/.test(panel));
 }
 
+// hovering a vein in god mode pins the two cursor charts (history +
+// along-the-vein profile); moving off the vein clears them
+{
+  const p = await d.at(...spot);
+  await page.mouse.move(p.x, p.y);
+  await page.waitForTimeout(400);
+  const panel = await page.locator('.panel').innerText();
+  ok('god: hover shows cursor history chart', /cursor · node \d+ · history/.test(panel));
+  ok('god: hover shows along-the-vein chart', /cursor · along the vein/.test(panel));
+  const off = await d.at(spot[0], Math.min(600, spot[1] + 200)); // empty cavity
+  await page.mouse.move(off.x, off.y);
+  await page.waitForTimeout(400);
+  ok('god: cursor charts clear off-vein', !/along the vein/.test(await page.locator('.panel').innerText()));
+}
+
 // leaving god mode hides the probes again and resets the tool
 await page.click('button:has-text("Probe")');
 await page.keyboard.press('g');

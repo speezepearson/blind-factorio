@@ -1,14 +1,14 @@
 import { useEffect, useRef } from 'react';
-import type { JSX, RefObject } from 'react';
+import type { JSX, ReactNode, RefObject } from 'react';
 import { HIST, resolveAttach } from './world';
-import type { World } from './world';
+import type { Vein, World } from './world';
 import type { Chemistry } from './chem';
-import { speciesColor } from './chem';
+import { SCALE, speciesColor, tempOf } from './chem';
 
 // A probe's chart data is the vein node's live history ring buffer — HIST
 // slots of (nsp species + temperature) Float32s, indexed by tick % HIST,
 // NaN where nothing was recorded. When the probed node disappears the probe
-// freezes: it keeps a private copy of the buffer as of that moment.
+// freezes: it keeps the orphaned buffer as of that moment.
 export interface Snapshot {
   h: Float32Array | null; // null: node exists but never recorded anything
   tick: number; // the window is (tick - HIST, tick]
@@ -37,22 +37,66 @@ const btn = {
   color: '#cfc4bd',
 };
 
-// ---- the chart: hand-drawn on canvas, straight from the ring buffer ----
+// ---- the chart: hand-drawn on canvas, straight from world state ----
 // Deliberately allocation-free and SVG-free. The panel repaints every
 // 250 ms; in this Chromium, sustained per-update garbage (chart-library
 // data arrays, SVG path strings) makes V8's committed heap grow without
 // bound — used-heap stays flat, the renderer's memory climbs until the tab
-// dies ("Aw, Snap"). Reading the Float32Array directly and painting on
-// canvas allocates nothing per frame, which is the fix. Measured before
-// touching this: recharts ~45 MB/s, per-pulse row objects ~1 MB/s,
-// buffer-direct canvas ~0.
+// dies ("Aw, Snap"). Reading world buffers directly and painting on canvas
+// allocates nothing per frame, which is the fix. Measured before touching
+// this: recharts ~45 MB/s, per-pulse row objects ~1 MB/s, direct canvas ~0.
 
-function drawChart(
-  cv: HTMLCanvasElement,
-  chem: Chemistry,
-  snap: Snapshot,
-  hoverX: number | null,
-): void {
+// One column per x position. Probe cards and both cursor charts paint
+// through this, so time-series (columns = ticks) and along-the-vein
+// profiles (columns = nodes) share one visual language.
+interface ChartSource {
+  n: number;
+  rec(i: number): boolean; // was anything recorded at column i?
+  val(i: number, k: number): number; // species k at column i, in parts
+  temp(i: number): number;
+  axis(i: number): string; // end-of-axis label for column i
+  label(i: number): string; // readout prefix ("tick 217" / "node 12")
+}
+
+// the hovered node's history over the saved window
+function ringSource(chem: Chemistry, snap: Snapshot): ChartSource {
+  const h = snap.h;
+  const nsp = chem.nsp;
+  const t1 = snap.tick;
+  const t0 = Math.max(0, t1 - HIST + 1);
+  const base = (i: number) => ((t0 + i) % HIST) * (nsp + 1);
+  return {
+    n: t1 - t0 + 1,
+    rec: (i) => h !== null && !Number.isNaN(h[base(i) + nsp]),
+    val: (i, k) => h![base(i) + k],
+    temp: (i) => h![base(i) + nsp],
+    axis: (i) => String(t0 + i),
+    label: (i) => `tick ${t0 + i}`,
+  };
+}
+
+// the current composition/temperature profile along a vein, node by node
+// (ghost nodes are gaps — they carry no fluid and have no temperature)
+function veinSource(chem: Chemistry, vein: Vein): ChartSource {
+  return {
+    n: vein.pts.length,
+    rec: (i) => vein.inc[i] === 1,
+    val: (i, k) => vein.parcels[i].c[k] / SCALE,
+    temp: (i) => tempOf(chem, vein.parcels[i]),
+    axis: (i) => String(i),
+    label: (i) => `node ${i}`,
+  };
+}
+
+const L = 30;
+const R = 30;
+const T = 6;
+const B = 14;
+
+// crosshair request: a chart-local mouse x in px, or a pinned column
+type Cross = { px: number } | { col: number } | null;
+
+function paintChart(cv: HTMLCanvasElement, chem: Chemistry, src: ChartSource, cross: Cross): void {
   const dpr = window.devicePixelRatio || 1;
   const w = cv.offsetWidth;
   const h = cv.offsetHeight;
@@ -64,38 +108,25 @@ function drawChart(
   }
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, w, h);
-  const L = 30;
-  const R = 30;
-  const T = 6;
-  const B = 14;
   const iw = w - L - R;
   const ih = h - T - B;
-  if (iw <= 0 || ih <= 0) return;
-
-  const buf = snap.h;
+  const n = src.n;
   const nsp = chem.nsp;
-  const stride = nsp + 1;
-  const t1 = snap.tick;
-  const t0 = Math.max(0, t1 - HIST + 1);
-  if (t1 - t0 < 1) return;
-  // a slot is trustworthy if it was written within the window: its temp
-  // cell is a number (buffers start NaN-filled)
-  const base = (tt: number) => (tt % HIST) * stride;
-  const rec = (tt: number) => buf !== null && !Number.isNaN(buf[base(tt) + nsp]);
+  if (n < 2 || iw <= 0 || ih <= 0) return;
 
   let maxC = 0;
   let maxT = 0;
-  for (let tt = t0; tt <= t1; tt++) {
-    if (!rec(tt)) continue;
-    const b = base(tt);
+  for (let i = 0; i < n; i++) {
+    if (!src.rec(i)) continue;
     let s = 0;
-    for (let k = 0; k < nsp; k++) s += buf![b + k];
+    for (let k = 0; k < nsp; k++) s += src.val(i, k);
     if (s > maxC) maxC = s;
-    if (buf![b + nsp] > maxT) maxT = buf![b + nsp];
+    const tv = src.temp(i);
+    if (tv > maxT) maxT = tv;
   }
   maxC = Math.max(maxC, 1e-6) * 1.05;
   maxT = Math.max(maxT, 1.3) * 1.05; // keep ambient (T = 1) in view
-  const x = (tt: number) => L + (iw * (tt - t0)) / (t1 - t0);
+  const x = (i: number) => L + (iw * i) / (n - 1);
   const yC = (v: number) => T + ih * (1 - v / maxC);
   const yT = (v: number) => T + ih * (1 - v / maxT);
 
@@ -110,25 +141,24 @@ function drawChart(
 
   // stacked composition areas, species piled in index order over each
   // contiguous recorded run; the stack bottom for species k is the sum of
-  // species < k, recomputed per column straight from the buffer
-  const below = (tt: number, k: number) => {
-    const b = base(tt);
+  // the species below it, recomputed per column straight from the source
+  const below = (i: number, k: number) => {
     let s = 0;
-    for (let q = 0; q < k; q++) s += buf![b + q];
+    for (let q = 0; q < k; q++) s += src.val(i, q);
     return s;
   };
   g.globalAlpha = 0.8;
   for (let k = 0; k < nsp; k++) {
     g.fillStyle = speciesColor(chem, k);
-    let tt = t0;
-    while (tt <= t1) {
-      while (tt <= t1 && !rec(tt)) tt++;
-      const runStart = tt;
-      while (tt <= t1 && rec(tt)) tt++;
-      if (tt > runStart) {
+    let i = 0;
+    while (i < n) {
+      while (i < n && !src.rec(i)) i++;
+      const start = i;
+      while (i < n && src.rec(i)) i++;
+      if (i > start) {
         g.beginPath();
-        for (let q = runStart; q < tt; q++) g.lineTo(x(q), yC(below(q, k) + buf![base(q) + k]));
-        for (let q = tt - 1; q >= runStart; q--) g.lineTo(x(q), yC(below(q, k)));
+        for (let q = start; q < i; q++) g.lineTo(x(q), yC(below(q, k) + src.val(q, k)));
+        for (let q = i - 1; q >= start; q--) g.lineTo(x(q), yC(below(q, k)));
         g.closePath();
         g.fill();
       }
@@ -142,13 +172,13 @@ function drawChart(
   g.setLineDash([5, 3]);
   g.beginPath();
   let pen = false;
-  for (let tt = t0; tt <= t1; tt++) {
-    if (!rec(tt)) {
+  for (let i = 0; i < n; i++) {
+    if (!src.rec(i)) {
       pen = false;
       continue;
     }
-    if (pen) g.lineTo(x(tt), yT(buf![base(tt) + nsp]));
-    else g.moveTo(x(tt), yT(buf![base(tt) + nsp]));
+    if (pen) g.lineTo(x(i), yT(src.temp(i)));
+    else g.moveTo(x(i), yT(src.temp(i)));
     pen = true;
   }
   g.stroke();
@@ -165,34 +195,35 @@ function drawChart(
   g.fillText('0', L + iw + 3, T + ih);
   g.textAlign = 'center';
   g.textBaseline = 'top';
-  g.fillText(String(t0), L, T + ih + 3);
-  g.fillText(String(t1), L + iw, T + ih + 3);
+  g.fillText(src.axis(0), L, T + ih + 3);
+  g.fillText(src.axis(n - 1), L + iw, T + ih + 3);
 
-  // hover: crosshair on the nearest recorded tick, with a value readout
-  if (hoverX !== null && hoverX >= L && hoverX <= L + iw) {
-    const want = t0 + ((hoverX - L) / iw) * (t1 - t0);
+  // crosshair: vertical line at the requested spot, value readout from the
+  // nearest recorded column
+  if (cross !== null) {
+    const colF = 'col' in cross ? cross.col : ((cross.px - L) / iw) * (n - 1);
+    if (colF < -0.5 || colF > n - 0.5) return;
     let best = -1;
     let bd = Infinity;
-    for (let tt = t0; tt <= t1; tt++) {
-      if (!rec(tt)) continue;
-      const d = Math.abs(tt - want);
+    for (let i = 0; i < n; i++) {
+      if (!src.rec(i)) continue;
+      const d = Math.abs(i - colF);
       if (d < bd) {
         bd = d;
-        best = tt;
+        best = i;
       }
     }
+    const px = x(Math.max(0, Math.min(n - 1, colF)));
+    g.strokeStyle = 'rgba(240,235,228,0.35)';
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(px, T);
+    g.lineTo(px, T + ih);
+    g.stroke();
     if (best >= 0) {
-      const b = base(best);
-      const px = x(best);
-      g.strokeStyle = 'rgba(240,235,228,0.35)';
-      g.lineWidth = 1;
-      g.beginPath();
-      g.moveTo(px, T);
-      g.lineTo(px, T + ih);
-      g.stroke();
-      let line = `tick ${best} · T ${buf![b + nsp].toFixed(2)}`;
+      let line = `${src.label(best)} · T ${src.temp(best).toFixed(2)}`;
       for (let k = 0; k < nsp; k++) {
-        if (buf![b + k] >= 0.0005) line += ` · ${chem.species[k]} ${buf![b + k].toFixed(2)}`;
+        if (src.val(best, k) >= 0.0005) line += ` · ${chem.species[k]} ${src.val(best, k).toFixed(2)}`;
       }
       g.font = `10px ${mono}`;
       const tw = g.measureText(line).width;
@@ -207,28 +238,60 @@ function drawChart(
   }
 }
 
+// a probe card's chart: chart-local hover, shared across cards so the
+// crosshair lines up the same tick on every probe
 function ProbeChart(props: { chem: Chemistry; snap: Snapshot; hoverX: RefObject<number | null> }): JSX.Element {
   const { chem, snap, hoverX } = props;
   const ref = useRef<HTMLCanvasElement>(null);
-  // repaint on every panel render (the 250 ms pulse): reading ~HIST slots
-  // out of a Float32Array and stroking a canvas is cheap and garbage-free
+  const paint = (cv: HTMLCanvasElement) =>
+    paintChart(cv, chem, ringSource(chem, snap), hoverX.current === null ? null : { px: hoverX.current });
+  // repaint on every panel render (the 250 ms pulse): reading the buffer
+  // and stroking a canvas is cheap and garbage-free
   useEffect(() => {
-    if (ref.current) drawChart(ref.current, chem, snap, hoverX.current);
+    if (ref.current) paint(ref.current);
   });
   return (
     <canvas
       ref={ref}
       style={{ width: '100%', height: 150, display: 'block' }}
       onMouseMove={(e) => {
-        const r = e.currentTarget.getBoundingClientRect();
-        hoverX.current = e.clientX - r.left;
-        drawChart(e.currentTarget, chem, snap, hoverX.current);
+        hoverX.current = e.clientX - e.currentTarget.getBoundingClientRect().left;
+        paint(e.currentTarget);
       }}
       onMouseLeave={(e) => {
         hoverX.current = null;
-        drawChart(e.currentTarget, chem, snap, null);
+        paint(e.currentTarget);
       }}
     />
+  );
+}
+
+// a cursor chart: no local mouse (the pointer is on the world canvas);
+// the along-the-vein variant pins its crosshair to the hovered node
+function CursorChart(props: { chem: Chemistry; src: ChartSource; col: number | null }): JSX.Element {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (ref.current) paintChart(ref.current, props.chem, props.src, props.col === null ? null : { col: props.col });
+  });
+  return <canvas ref={ref} style={{ width: '100%', height: 150, display: 'block' }} />;
+}
+
+function Card(props: { title: string; onRemove?: () => void; children: ReactNode }): JSX.Element {
+  return (
+    <div style={{ background: '#262023', border: '1px solid #443a3c', borderRadius: 8, padding: '6px 8px 2px', marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontFamily: mono, fontSize: 11.5, color: '#9db4bd' }}>{props.title}</span>
+        {props.onRemove && (
+          <button
+            onClick={props.onRemove}
+            style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#e07a6a', fontWeight: 700, fontSize: 13 }}
+          >
+            ✕
+          </button>
+        )}
+      </div>
+      <div style={{ height: 150 }}>{props.children}</div>
+    </div>
   );
 }
 
@@ -253,15 +316,21 @@ export function ProbePanel(props: {
   world: World;
   probes: Probe[];
   uiTick: number;
+  cursor: { veinId: number; idx: number } | null;
   onRemove: (id: number) => void;
   onClear: () => void;
 }): JSX.Element {
   const { world, probes, onRemove, onClear } = props;
   const chem = world.chem;
-  // one hover x for ALL cards: live charts share a time window, so the
-  // crosshair lines up the same tick across every probe
+  // one hover x for ALL probe cards: live charts share a time window, so
+  // the crosshair lines up the same tick across every probe
   const hoverX = useRef<number | null>(null);
   void props.uiTick; // the pulse that makes the charts advance
+
+  // the cursor probe: the vein node under the mouse right now, if it still
+  // exists (the world may have changed since the last mousemove)
+  const cvein = props.cursor ? world.veins.get(props.cursor.veinId) : undefined;
+  const cidx = props.cursor && cvein && props.cursor.idx < cvein.pts.length ? props.cursor.idx : null;
 
   return (
     <div>
@@ -272,32 +341,31 @@ export function ProbePanel(props: {
         {probes.length > 0 &&
           <button style={btn} onClick={onClear}>clear all</button>}
       </div>
+      {cvein && cidx !== null && (
+        <>
+          <Card title={`cursor · node ${cidx} · history`}>
+            <CursorChart chem={chem} src={ringSource(chem, { h: cvein.hist[cidx], tick: world.tick })} col={null} />
+          </Card>
+          <Card title={'cursor · along the vein'}>
+            <CursorChart chem={chem} src={veinSource(chem, cvein)} col={cidx} />
+          </Card>
+        </>
+      )}
       {probes.length === 0 && (
         <div style={{ fontSize: 12, color: '#8d7f84', padding: 10, background: '#211b1e', border: '1px dashed #443a3c', borderRadius: 8 }}>
-          right-click a vein (or use the probe tool) to chart its composition &amp; temperature here
+          right-click a vein (or use the probe tool) to chart its composition &amp; temperature here — or just
+          hover a vein for the cursor charts
         </div>
       )}
-      {probes.map((pr, i) => {
-        const snap = liveSnapshot(world, pr);
-        return (
-          <div key={pr.id} style={{ background: '#262023', border: '1px solid #443a3c', borderRadius: 8, padding: '6px 8px 2px', marginBottom: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontFamily: mono, fontSize: 11.5, color: '#9db4bd' }}>
-                #{i + 1} {pr.label}{pr.frozen ? ' (gone)' : ''}
-              </span>
-              <button
-                onClick={() => onRemove(pr.id)}
-                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#e07a6a', fontWeight: 700, fontSize: 13 }}
-              >
-                ✕
-              </button>
-            </div>
-            <div style={{ height: 150 }}>
-              <ProbeChart chem={chem} snap={snap} hoverX={hoverX} />
-            </div>
-          </div>
-        );
-      })}
+      {probes.map((pr, i) => (
+        <Card
+          key={pr.id}
+          title={`#${i + 1} ${pr.label}${pr.frozen ? ' (gone)' : ''}`}
+          onRemove={() => onRemove(pr.id)}
+        >
+          <ProbeChart chem={chem} snap={liveSnapshot(world, pr)} hoverX={hoverX} />
+        </Card>
+      ))}
     </div>
   );
 }

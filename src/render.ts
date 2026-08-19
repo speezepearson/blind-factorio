@@ -24,6 +24,7 @@ export interface ViewState {
   drag: DragState;
   probes: Array<{ x: number; y: number }>;
   eraseHover: { veinId: number; i0: number; i1: number } | null; // shift-erase preview span
+  cursor: Pt | null; // the cursor-probed node (god mode): ringed on the canvas
   phase: number; // continuous tick: world.tick + sub-tick fraction
   timeMs: number; // wall clock, for sim-speed-independent ambience
 }
@@ -576,6 +577,17 @@ export function drawWorld(canvas: HTMLCanvasElement, view: ViewState): void {
       ctx.arc(pt[0], pt[1], 14, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+
+  // the cursor probe: a faint dashed ring on the node the mouse is reading
+  if (view.godMode && view.cursor) {
+    ctx.strokeStyle = 'rgba(240,235,228,0.65)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.arc(view.cursor[0], view.cursor[1], 9, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   // probe markers (god only, like the probes themselves)

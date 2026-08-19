@@ -55,6 +55,15 @@ export default function App() {
   const dragExtendRef = useRef<number | null>(null); // vein whose open tail this stroke continues
   const eraseHoverRef = useRef<{ veinId: number; i0: number; i1: number } | null>(null);
   const nextProbeId = useRef(1);
+  // the cursor probe: the vein node under the mouse (god mode only). Bumps
+  // the ui pulse only when the hovered NODE changes, not per mouse pixel.
+  const cursorRef = useRef<{ veinId: number; idx: number } | null>(null);
+  const setCursorProbe = (next: { veinId: number; idx: number } | null) => {
+    const cur = cursorRef.current;
+    if (next?.veinId === cur?.veinId && next?.idx === cur?.idx) return;
+    cursorRef.current = next;
+    setUiTick((t) => t + 1);
+  };
 
   const flashMsg = (msg: string) => {
     setFlash(msg);
@@ -103,6 +112,12 @@ export default function App() {
       }
       const cv = canvasRef.current;
       if (cv) {
+        let cursorPt: Pt | null = null;
+        const cp = cursorRef.current;
+        if (cp && godModeRef.current) {
+          const v = worldRef.current.veins.get(cp.veinId);
+          if (v && cp.idx < v.pts.length) cursorPt = v.pts[cp.idx];
+        }
         drawWorld(cv, {
           world: worldRef.current,
           godMode: godModeRef.current,
@@ -110,6 +125,7 @@ export default function App() {
           drag: dragRef.current,
           probes: probesRef.current,
           eraseHover: eraseHoverRef.current,
+          cursor: cursorPt,
           phase: worldRef.current.tick + Math.max(0, Math.min(1, acc)),
           timeMs: now,
         });
@@ -133,6 +149,7 @@ export default function App() {
     if (!god) {
       setTool((t) => (t === 'probe' ? 'draw' : t));
       setTempOverlay(false);
+      cursorRef.current = null;
     }
   };
   useEffect(() => {
@@ -294,6 +311,12 @@ export default function App() {
       }
     } else if (eraseHoverRef.current) {
       eraseHoverRef.current = null;
+    }
+    if (godModeRef.current && !dr && pt) {
+      const nref = worldRef.current.nodeHash.nearest(pt, R_SNAP);
+      setCursorProbe(nref ? { veinId: nref.vein.id, idx: nref.idx } : null);
+    } else {
+      setCursorProbe(null);
     }
     if (!dr) return;
     if (!pt) return;
@@ -649,6 +672,7 @@ export default function App() {
             onMouseLeave={() => {
               endDrag();
               eraseHoverRef.current = null;
+              setCursorProbe(null);
             }}
             onDoubleClick={onDblClick}
             onContextMenu={onContextMenu}
@@ -674,6 +698,7 @@ export default function App() {
               world={w}
               probes={probes}
               uiTick={uiTick}
+              cursor={cursorRef.current}
               onRemove={(id) => setProbes((ps) => ps.filter((p) => p.id !== id))}
               onClear={() => setProbes([])}
             />
