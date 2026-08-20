@@ -1,9 +1,13 @@
 import {
-  addInto, ambientLeak, cloneParcel, emptyParcel, exchangeHeat, radCount, reactParcel,
-  sourceParcel, splitHalf, stochRound, tempOf, totalParticles,
+  ambientLeak, cloneParcel, emptyParcel, exchangeHeat, radCount, reactParcel,
+  sourceParcel, tempOf, totalParticles,
   K_ALONG, K_CROSS, SCALE,
 } from './chem';
 import type { Chemistry, Parcel } from './chem';
+import {
+  HEART_B, NSUB, NU_ORG, NU_SRC, NU_T, V_CHAMBER, V_NODE, V_SEED, V_SIDE,
+  moveFluid, sSite, ventFluid,
+} from './entropy';
 import {
   NodeHash, PORT_R, R_CROSS, R_ERASE, R_ORGAN, R_SNAP, SEG, SRC_R, WORLD_H, WORLD_W,
   circlePts, dist, resample,
@@ -29,7 +33,13 @@ import type { Pt } from './geom';
 // Organs are DISCS of radius R_ORGAN, grown by budding anywhere on a vein
 // that flows in from outside the disc; the in-disc stretch is eaten and the
 // ports sit where the curve pierced the membrane. One organ type exists so
-// far — the radical filter — hard-coded in organProcess().
+// far — the radical filter — three chambers wired by effusion channels.
+//
+// ENTROPY-ENGINE BRANCH: advection and organ code are replaced by biased
+// detailed-balanced transport channels (docs/thermodynamic-engine.md).
+// Each node has a capacity `cap` (radical-slots), born collapsed; the
+// world keeps boundary-account meters so conservation and the second law
+// are auditable statements.
 
 export const HIST = 400; // rolling probe-history window, ticks
 const HIST_CAP = 1600; // max nodes carrying passive history
@@ -52,6 +62,7 @@ export interface Vein {
   head: Head;
   tail: Tail;
   parcels: Parcel[];
+  cap: number[]; // per-node capacity V in radical-slots — born collapsed, inflates with contents
   flow: number[]; // smoothed radicals/tick per node, drives drawn width
   hist: Array<Float32Array | null>; // per-node probe history ring buffers
   probed?: boolean;
@@ -70,9 +81,10 @@ export interface Organ {
   portIn: Pt;
   portOut: Pt;
   portSide: Pt;
-  inAccum: Parcel | null;
-  outReady: Parcel | null;
-  sideReady: Parcel | null;
+  // A grown organ is three chambers wired by effusion channels: inlet→main
+  // passes everything, inlet→side passes single radicals only. Null while
+  // growing. Chamber capacities are the V_CHAMBER/V_SIDE constants.
+  chambers: { inlet: Parcel; main: Parcel; side: Parcel } | null;
   // A freshly budded organ grows over GROW_TICKS ticks. While growing it
   // swallows its feed and emits nothing. Budding snips the host vein once,
   // locally, at the organ's center; the two halves stay intact (hidden
@@ -95,6 +107,30 @@ export interface Source {
   name: string;
 }
 
+// The declared boundary accounts (docs/thermodynamic-engine.md §10): every
+// conservation statement is exact modulo these. Radicals and energy
+// (quanta, heat + bond ledger) in/out per account; heartS is the entropy
+// budget the peristaltic bias injected; growthSlots the capacity minted by
+// construction; cut* books surgery (erasing, trims).
+export interface Meters {
+  heartS: number;
+  srcRad: number;
+  srcE: number;
+  ventRad: number;
+  ventE: number;
+  grownRad: number;
+  grownE: number;
+  cutRad: number;
+  cutE: number;
+  ambQ: number;
+  growthSlots: number;
+}
+
+const freshMeters = (): Meters => ({
+  heartS: 0, srcRad: 0, srcE: 0, ventRad: 0, ventE: 0,
+  grownRad: 0, grownE: 0, cutRad: 0, cutE: 0, ambQ: 0, growthSlots: 0,
+});
+
 export interface World {
   chem: Chemistry;
   tick: number;
@@ -104,6 +140,7 @@ export interface World {
   sources: Source[];
   nodeHash: NodeHash<Vein>; // rebuilt by reindex(); geometry is frozen between edits
   histCount: number;
+  meters: Meters;
 }
 
 export function makeWorld(chem: Chemistry): World {
@@ -121,6 +158,7 @@ export function makeWorld(chem: Chemistry): World {
     sources,
     nodeHash: new NodeHash<Vein>(),
     histCount: 0,
+    meters: freshMeters(),
   };
 }
 
@@ -157,6 +195,7 @@ function newVein(w: World, pts: Pt[], head: Head, tail: Tail, incarnate: boolean
     head,
     tail,
     parcels: pts.map(() => emptyParcel(w.chem)),
+    cap: pts.map(() => 0), // born collapsed; inflates as fluid arrives
     hist: pts.map(() => null),
     flow: pts.map(() => 0),
     inc: pts.map(() => (incarnate ? 1 : 0)),
@@ -279,13 +318,38 @@ function growthStep(w: World): void {
 
 export function doTick(w: World): void {
   const chem = w.chem;
+  const M = w.meters;
 
   // 0) INCARNATION — ghost veins grow real where they touch live network
   if (w.tick % INC_PERIOD === 0) growthStep(w);
 
+  // 0b) INFLATION — veins are born collapsed (cap 0): an incarnate node
+  // opens a small seed lumen and dilates geometrically (×1.25/tick) toward
+  // what its duty demands: enough slots for 3× its standing stock or 8
+  // ticks of its arrival flux, whichever is greater, up to V_NODE. Flux
+  // matters: a node passing flow through efficiently keeps low standing
+  // contents, and a contents-only ratchet left such nodes as permanent
+  // necks choking full-bore jams behind them. No free vacuum: capacity
+  // follows fluid use, and every minted slot is booked.
+  for (const p of w.veins.values()) {
+    for (let i = 0; i < p.parcels.length; i++) {
+      if (!p.inc[i]) continue;
+      const N = radCount(chem, p.parcels[i].c);
+      const desired = Math.min(V_NODE, Math.max(V_SEED, Math.ceil(Math.max(N * 3, p.flow[i] * 8))));
+      if (p.cap[i] < desired) {
+        const next = Math.min(desired, Math.max(V_SEED, Math.ceil(p.cap[i] * 1.25)));
+        M.growthSlots += next - p.cap[i];
+        p.cap[i] = next;
+      }
+    }
+  }
+
   // 1) HEAT — along chains, between nearby nodes (any two incarnate nodes
   // within R_CROSS that aren't chain neighbors: crossings, parallel runs,
-  // even a vein's own hairpins), and ambient leak. Ghost nodes take no part.
+  // even a vein's own hairpins), between organ chambers, and ambient leak.
+  // Ghost nodes take no part. Hot→cold proportional flow is the ΔS>0
+  // direction always — the mean-field form is a safe optimization of the
+  // quantum-hop channels (docs/thermodynamic-engine.md addendum).
   for (const p of w.veins.values()) {
     for (let i = 0; i + 1 < p.parcels.length; i++) {
       if (p.inc[i] && p.inc[i + 1]) exchangeHeat(chem, p.parcels[i], p.parcels[i + 1], K_ALONG);
@@ -304,94 +368,214 @@ export function doTick(w: World): void {
       for (const ref of near) exchangeHeat(chem, p.parcels[i], ref.vein.parcels[ref.idx], K_CROSS);
     }
   }
+  for (const o of w.organs.values()) {
+    if (!o.chambers) continue;
+    exchangeHeat(chem, o.chambers.inlet, o.chambers.main, K_ALONG);
+    exchangeHeat(chem, o.chambers.inlet, o.chambers.side, K_ALONG);
+    exchangeHeat(chem, o.chambers.main, o.chambers.side, K_ALONG);
+  }
   for (const p of w.veins.values()) {
-    for (let i = 0; i < p.parcels.length; i++) if (p.inc[i]) ambientLeak(chem, p.parcels[i]);
+    for (let i = 0; i < p.parcels.length; i++) if (p.inc[i]) M.ambQ += ambientLeak(chem, p.parcels[i]);
+  }
+  for (const o of w.organs.values()) {
+    if (!o.chambers) continue;
+    M.ambQ += ambientLeak(chem, o.chambers.inlet);
+    M.ambQ += ambientLeak(chem, o.chambers.main);
+    M.ambQ += ambientLeak(chem, o.chambers.side);
   }
 
-  // 2) REACTIONS
+  // 2) REACTIONS — untouched kinetics: fill cancels from radical-conserving
+  // reactions at one site, so the tuned law IS the (★) law restricted there
   for (const p of w.veins.values()) {
     for (let i = 0; i < p.parcels.length; i++) if (p.inc[i]) reactParcel(chem, p.parcels[i]);
   }
+  for (const o of w.organs.values()) {
+    if (!o.chambers) continue;
+    reactParcel(chem, o.chambers.inlet);
+    reactParcel(chem, o.chambers.main);
+    reactParcel(chem, o.chambers.side);
+  }
 
-  // 3) ADVECTION — veins have infinite throughput: everything advances one
-  // node every tick, nothing ever queues. Fluid that runs out of vein
-  // vents into the cavity; every vent is structurally visible — an open
-  // tail, the frontier of a still-incarnating ghost, a growing organ's
-  // mouth — so mass-balance inference stays honest.
-  const headIn = new Map<number, Parcel>();
+  // 3) TRANSPORT — every movement of matter is a biased detailed-balanced
+  // channel through moveFluid()/ventFluid() (docs/thermodynamic-engine.md).
+  // Flow is no longer plug advection: it is the net current the peristaltic
+  // bias HEART_B drives down each vein, stalling honestly against fill
+  // gradients. Junctions, ports, sources, and vents are just more channels.
+  type Att = { vein: Vein; idx: number };
+  const forkOf = new Map<number, Att>();
+  const mergeOf = new Map<number, Att>();
+  const tailVent = new Map<number, 'vent' | 'grown'>();
   for (const p of w.veins.values()) {
     if (p.head.type === 'fork' && p.inc[0]) {
       const seg = resolveAttach(w, p.head, { selfId: p.id, end: 'head' });
-      if (seg && seg.vein.inc[seg.idx]) headIn.set(p.id, splitHalf(chem, seg.vein.parcels[seg.idx]));
+      if (seg && seg.vein.inc[seg.idx]) forkOf.set(p.id, seg);
     }
-  }
-  const tailOut = new Map<number, Parcel>();
-  for (const p of w.veins.values()) {
-    const n = p.pts.length;
-    if (p.inc[n - 1]) tailOut.set(p.id, p.parcels[n - 1]);
-    let fill: Parcel | null = null;
-    if (p.inc[0]) {
-      if (p.head.type === 'source') fill = sourceParcel(chem, p.head.spIdx);
-      else if (p.head.type === 'fork') fill = headIn.get(p.id) ?? null;
-      else if (p.head.type === 'port') {
-        const o = w.organs.get(p.head.organId);
-        if (o) {
-          const slot = p.head.port === 'side' ? 'sideReady' : 'outReady';
-          if (o[slot]) {
-            fill = o[slot];
-            o[slot] = null;
-          }
-        }
-      }
-    }
-    const old = p.parcels;
-    const next = new Array<Parcel>(n);
-    for (let i = n - 1; i >= 1; i--) {
-      // a parcel shifting into a not-yet-incarnate node vents at the frontier
-      next[i] = p.inc[i] ? old[i - 1] : emptyParcel(chem);
-    }
-    next[0] = fill ?? emptyParcel(chem);
-    p.parcels = next;
-  }
-  for (const p of w.veins.values()) {
-    const out = tailOut.get(p.id);
-    if (!out) continue;
+    const last = p.pts.length - 1;
+    if (!p.inc[last]) continue;
     if (p.tail.type === 'merge') {
       const seg = resolveAttach(w, p.tail, { selfId: p.id, end: 'tail' });
-      // a merge target still ghost = the junction isn't built yet: vents
-      if (seg && seg.vein.inc[seg.idx]) addInto(chem, seg.vein.parcels[seg.idx], out);
+      if (seg && seg.vein.inc[seg.idx]) mergeOf.set(p.id, seg);
+      else tailVent.set(p.id, 'vent'); // junction not built yet: vents
     } else if (p.tail.type === 'organ-in') {
       const o = w.organs.get(p.tail.organId);
       // a growing organ swallows its feed (it's building itself with it)
-      if (o && organGrown(o)) {
-        if (o.inAccum) addInto(chem, o.inAccum, out);
-        else o.inAccum = out;
+      if (!o) tailVent.set(p.id, 'vent');
+      else if (!o.chambers) tailVent.set(p.id, 'grown');
+    } else tailVent.set(p.id, 'vent'); // open tail
+  }
+  const portFed = new Set<string>();
+  for (const p of w.veins.values()) {
+    if (p.head.type === 'port' && p.inc[0]) portFed.add(p.head.organId + ':' + p.head.port);
+  }
+  const loadAcc = new Map<number, number>();
+  const ventAcc = new Map<string, { rad: number; c: Int32Array }>();
+  // per-node arrival flux this tick — feeds flow[] (width, haze, chevrons)
+  // and the inflation ratchet
+  const arrivals = new Map<number, Float64Array>();
+  const bump = (p: Vein, i: number, rad: number): void => {
+    if (rad <= 0) return;
+    let a = arrivals.get(p.id);
+    if (!a) {
+      a = new Float64Array(p.pts.length);
+      arrivals.set(p.id, a);
+    }
+    a[i] += rad;
+  };
+  const tau = 1 / NSUB;
+  for (let sub = 0; sub < NSUB; sub++) {
+    for (const p of w.veins.values()) {
+      const n = p.parcels.length;
+      const last = n - 1;
+      // source wellhead: detailed-balanced exchange with a frozen reservoir
+      // at ambient. UNBIASED — the reservoir seeps at its own chemical
+      // potential, so injection self-limits when the head node reaches
+      // reservoir fill (a biased wellhead jammed the whole network to
+      // saturation); the peristaltic bias lives in the vein hops alone.
+      if (p.head.type === 'source' && p.inc[0]) {
+        const res = sourceParcel(chem, p.head.spIdx);
+        const out = moveFluid(chem, res, V_NODE, p.parcels[0], p.cap[0], 0, NU_SRC, tau, false, true);
+        M.srcRad += out.rad;
+        M.srcE += out.E;
+        M.heartS += out.heartS;
+        bump(p, 0, out.rad);
+      }
+      // organ out/side port: the chamber pushes into the vein's first node
+      if (p.head.type === 'port' && p.inc[0]) {
+        const o = w.organs.get(p.head.organId);
+        if (o?.chambers) {
+          const side = p.head.port === 'side';
+          const ch = side ? o.chambers.side : o.chambers.main;
+          const out = moveFluid(chem, ch, side ? V_SIDE : V_CHAMBER, p.parcels[0], p.cap[0], HEART_B, NU_T, tau);
+          M.heartS += out.heartS;
+          bump(p, 0, out.rad);
+        }
+      }
+      // fork: the host node feeds the branch's first node
+      const fk = forkOf.get(p.id);
+      if (fk) {
+        const out = moveFluid(chem, fk.vein.parcels[fk.idx], fk.vein.cap[fk.idx], p.parcels[0], p.cap[0], HEART_B, NU_T, tau);
+        M.heartS += out.heartS;
+        bump(p, 0, out.rad);
+      }
+      // along the vein, one biased hop channel per adjacent incarnate pair;
+      // incarnation frontiers vent
+      for (let i = 0; i + 1 < n; i++) {
+        if (!p.inc[i]) continue;
+        if (p.inc[i + 1]) {
+          const out = moveFluid(chem, p.parcels[i], p.cap[i], p.parcels[i + 1], p.cap[i + 1], HEART_B, NU_T, tau);
+          M.heartS += out.heartS;
+          bump(p, i + 1, out.rad);
+        } else {
+          const out = ventFluid(chem, p.parcels[i], NU_T, HEART_B, tau);
+          M.ventRad += out.rad;
+          M.ventE += out.E;
+          M.heartS += out.heartS;
+        }
+      }
+      // the tail: merge into a host, feed an organ, be swallowed, or vent
+      const mg = mergeOf.get(p.id);
+      if (mg) {
+        const out = moveFluid(chem, p.parcels[last], p.cap[last], mg.vein.parcels[mg.idx], mg.vein.cap[mg.idx], HEART_B, NU_T, tau);
+        M.heartS += out.heartS;
+        bump(mg.vein, mg.idx, out.rad);
+      } else if (p.tail.type === 'organ-in' && p.inc[last]) {
+        const o = w.organs.get(p.tail.organId);
+        if (o?.chambers) {
+          const out = moveFluid(chem, p.parcels[last], p.cap[last], o.chambers.inlet, V_CHAMBER, HEART_B, NU_T, tau);
+          M.heartS += out.heartS;
+          loadAcc.set(o.id, (loadAcc.get(o.id) ?? 0) + Math.max(0, out.rad));
+        }
+      }
+      const tv = tailVent.get(p.id);
+      if (tv) {
+        const out = ventFluid(chem, p.parcels[last], NU_T, HEART_B, tau);
+        if (tv === 'grown') {
+          M.grownRad += out.rad;
+          M.grownE += out.E;
+        } else {
+          M.ventRad += out.rad;
+          M.ventE += out.E;
+        }
+        M.heartS += out.heartS;
       }
     }
-    // open tails vent (discarded)
+    // organ internals: unbiased effusion channels (inlet→main passes
+    // everything, inlet→side passes single radicals only), and any port
+    // with no live vein on it vents into the cavity
+    for (const o of w.organs.values()) {
+      if (!o.chambers) continue;
+      const { inlet, main, side } = o.chambers;
+      moveFluid(chem, inlet, V_CHAMBER, main, V_CHAMBER, 0, NU_ORG, tau);
+      moveFluid(chem, inlet, V_CHAMBER, side, V_SIDE, 0, NU_ORG, tau, true);
+      for (const port of ['out', 'side'] as const) {
+        if (portFed.has(o.id + ':' + port)) continue;
+        const key = o.id + ':' + port;
+        let acc = ventAcc.get(key);
+        if (!acc) {
+          acc = { rad: 0, c: new Int32Array(chem.nsp) };
+          ventAcc.set(key, acc);
+        }
+        const out = ventFluid(chem, port === 'out' ? main : side, NU_T, HEART_B, tau, acc.c);
+        acc.rad += out.rad;
+        M.ventRad += out.rad;
+        M.ventE += out.E;
+        M.heartS += out.heartS;
+      }
+    }
+  }
+  // organ view-state: the load pulse and the port-vent haze trackers
+  for (const o of w.organs.values()) {
+    if (!o.chambers) continue;
+    o.load = o.load * 0.9 + (loadAcc.get(o.id) ?? 0) * 0.1;
+    const upd = (prev: Organ['ventOut'], key: string): Organ['ventOut'] => {
+      const acc = ventAcc.get(key);
+      if (acc && acc.rad > 0) return { rate: (prev?.rate ?? 0) * 0.9 + acc.rad * 0.1, c: acc.c };
+      if (prev && prev.rate * 0.9 > 20) return { rate: prev.rate * 0.9, c: prev.c };
+      return null;
+    };
+    o.ventOut = upd(o.ventOut, o.id + ':out');
+    o.ventSide = upd(o.ventSide, o.id + ':side');
   }
   // organs: growing ones just grow; on completion the two host halves are
   // trimmed back to the membrane (their in-disc portions have been hidden
-  // under the opaque blob since budding) and the ports attach
+  // under the opaque blob since budding), the ports attach, and the
+  // chambers open
   for (const o of w.organs.values()) {
     if (!organGrown(o)) {
       o.growth++;
-      o.outReady = null;
-      o.sideReady = null;
-      o.inAccum = null;
       if (organGrown(o)) completeBud(w, o);
-      continue;
     }
-    organProcess(w, o);
   }
 
   // 4) RECORD
   w.tick++;
   const slot = w.tick % HIST;
   for (const p of w.veins.values()) {
+    const arr = arrivals.get(p.id);
     for (let i = 0; i < p.parcels.length; i++) {
       const parcel = p.parcels[i];
-      p.flow[i] = p.flow[i] * 0.9 + radCount(chem, parcel.c) * 0.1;
+      // flow is now true flux: radicals ARRIVING at this node per tick
+      p.flow[i] = p.flow[i] * 0.9 + (arr ? arr[i] : 0) * 0.1;
       let h = p.hist[i];
       if (!h && (totalParticles(chem, parcel.c) > 0 || p.probed)) h = ensureHist(w, p, i);
       if (!h) continue;
@@ -402,13 +586,18 @@ export function doTick(w: World): void {
   }
 }
 
-// slice a vein down to pts[s..e], dropping (and accounting) trimmed hists
+// slice a vein down to pts[s..e], dropping (and accounting) trimmed
+// hists and booking the trimmed fluid to the surgery account
 function trimVein(w: World, p: Vein, s: number, e: number): void {
   for (let i = 0; i < p.pts.length; i++) {
-    if ((i < s || i > e) && p.hist[i]) w.histCount--;
+    if (i < s || i > e) {
+      if (p.hist[i]) w.histCount--;
+      bookCut(w, p.parcels[i]);
+    }
   }
   p.pts = p.pts.slice(s, e + 1);
   p.parcels = p.parcels.slice(s, e + 1);
+  p.cap = p.cap.slice(s, e + 1);
   p.hist = p.hist.slice(s, e + 1);
   p.flow = p.flow.slice(s, e + 1);
   p.inc = p.inc.slice(s, e + 1);
@@ -417,6 +606,7 @@ function trimVein(w: World, p: Vein, s: number, e: number): void {
 
 function deleteVein(w: World, p: Vein): void {
   for (const h of p.hist) if (h) w.histCount--;
+  for (const parcel of p.parcels) bookCut(w, parcel);
   w.veins.delete(p.id);
 }
 
@@ -439,6 +629,7 @@ function bridgeToPoint(w: World, p: Vein, end: 'head' | 'tail', target: Pt): voi
       : resample([anchor, target], SEG).slice(1);
   const pts = stub.map((q) => [q[0], q[1]] as Pt);
   const parcels = stub.map(() => emptyParcel(w.chem));
+  const cap = stub.map(() => 0);
   const hist = stub.map(() => null);
   const flow = stub.map(() => 0);
   const inc = stub.map(() => 1);
@@ -446,6 +637,7 @@ function bridgeToPoint(w: World, p: Vein, end: 'head' | 'tail', target: Pt): voi
   if (end === 'head') {
     p.pts = [...pts, ...p.pts];
     p.parcels = [...parcels, ...p.parcels];
+    p.cap = [...cap, ...p.cap];
     p.hist = [...hist, ...p.hist];
     p.flow = [...flow, ...p.flow];
     p.inc = [...inc, ...p.inc];
@@ -453,6 +645,7 @@ function bridgeToPoint(w: World, p: Vein, end: 'head' | 'tail', target: Pt): voi
   } else {
     p.pts = [...p.pts, ...pts];
     p.parcels = [...p.parcels, ...parcels];
+    p.cap = [...p.cap, ...cap];
     p.hist = [...p.hist, ...hist];
     p.flow = [...p.flow, ...flow];
     p.inc = [...p.inc, ...inc];
@@ -489,47 +682,46 @@ function completeBud(w: World, o: Organ): void {
       bridgeToPoint(w, down, 'head', o.portOut);
     } else deleteVein(w, down);
   }
+  // the chambers open (built by construction: the swallowed feed paid for
+  // them — book the minted capacity to the growth account)
+  o.chambers = makeChambers(w.chem);
+  w.meters.growthSlots += 2 * V_CHAMBER + V_SIDE;
   reindex(w);
   healAttachments(w);
 }
 
-// The radical filter, the one organ so far: free radicals (single-radical
-// species) exit the side port, composites pass through to out. Heat splits
-// in proportion to the radicals each stream carries.
-function organProcess(w: World, o: Organ): void {
-  const chem = w.chem;
-  // unconsumed previous output vents — note it for the haze before dropping
-  const note = (slot: Parcel | null, prev: Organ['ventOut']): Organ['ventOut'] => {
-    if (slot && totalParticles(chem, slot.c) > 0) {
-      return { rate: (prev?.rate ?? 0) * 0.9 + radCount(chem, slot.c) * 0.1, c: slot.c };
+export const makeChambers = (chem: Chemistry): NonNullable<Organ['chambers']> => ({
+  inlet: emptyParcel(chem),
+  main: emptyParcel(chem),
+  side: emptyParcel(chem),
+});
+
+// Total world entropy — the god readout; the meters are its boundary flows.
+export function worldEntropy(w: World): number {
+  let S = 0;
+  for (const p of w.veins.values()) {
+    for (let i = 0; i < p.parcels.length; i++) {
+      if (p.inc[i]) S += sSite(w.chem, p.parcels[i], p.cap[i]);
     }
-    if (prev && prev.rate * 0.9 > 20) return { rate: prev.rate * 0.9, c: prev.c };
-    return null;
-  };
-  o.ventOut = note(o.outReady, o.ventOut);
-  o.ventSide = note(o.sideReady, o.ventSide);
-  o.outReady = null;
-  o.sideReady = null;
-  const inp = o.inAccum;
-  o.inAccum = null;
-  o.load = o.load * 0.9 + (inp ? radCount(chem, inp.c) : 0) * 0.1;
-  if (!inp || totalParticles(chem, inp.c) === 0) return;
-  const main: Parcel = { c: new Int32Array(chem.nsp), U: 0 };
-  const side: Parcel = { c: new Int32Array(chem.nsp), U: 0 };
-  for (let i = 0; i < chem.nsp; i++) {
-    if (chem.radcount[i] === 1) side.c[i] = inp.c[i];
-    else main.c[i] = inp.c[i];
   }
-  const rm = radCount(chem, main.c);
-  const rs = radCount(chem, side.c);
-  const tot = rm + rs;
-  if (tot > 0) {
-    side.U = stochRound(inp.U * (rs / tot));
-    side.U = Math.max(0, Math.min(side.U, inp.U));
-    main.U = inp.U - side.U;
-  } else main.U = inp.U;
-  o.outReady = main;
-  o.sideReady = side;
+  for (const o of w.organs.values()) {
+    if (!o.chambers) continue;
+    S += sSite(w.chem, o.chambers.inlet, V_CHAMBER);
+    S += sSite(w.chem, o.chambers.main, V_CHAMBER);
+    S += sSite(w.chem, o.chambers.side, V_SIDE);
+  }
+  return S;
+}
+
+// surgery (erasing, trims) removes fluid from the world outside the
+// physics: book it so the radical/energy audits stay exact
+function bookCut(w: World, p: Parcel): void {
+  const rad = radCount(w.chem, p.c);
+  if (rad === 0 && p.U === 0) return;
+  w.meters.cutRad += rad;
+  let E = p.U; // energy content = heat − bond depth (U − E_bond is the invariant)
+  for (let s = 0; s < w.chem.nsp; s++) E -= p.c[s] * w.chem.bondEq[s];
+  w.meters.cutE += E;
 }
 
 // ---------------- editing ops ----------------
@@ -561,6 +753,11 @@ export function eraseNear(w: World, brush: Pt[]): void {
         if (p.head.type === 'port' && p.head.organId === o.id) p.head = { type: 'open' };
         if (p.tail.type === 'organ-in' && p.tail.organId === o.id) p.tail = { type: 'open' };
       }
+      if (o.chambers) {
+        bookCut(w, o.chambers.inlet);
+        bookCut(w, o.chambers.main);
+        bookCut(w, o.chambers.side);
+      }
       w.organs.delete(o.id);
     }
   }
@@ -572,7 +769,7 @@ export function eraseNear(w: World, brush: Pt[]): void {
     }
     w.veins.delete(p.id);
     type Run = {
-      pt: Pt; parcel: Parcel; hist: Float32Array | null; flow: number;
+      pt: Pt; parcel: Parcel; cap: number; hist: Float32Array | null; flow: number;
       inc: number; incTick: number; i: number;
     };
     let run: Run[] = [];
@@ -584,6 +781,7 @@ export function eraseNear(w: World, brush: Pt[]): void {
           id: w.nextId++,
           pts: run.map((r) => r.pt),
           parcels: run.map((r) => r.parcel),
+          cap: run.map((r) => r.cap),
           hist: run.map((r) => r.hist),
           flow: run.map((r) => r.flow),
           inc: run.map((r) => r.inc),
@@ -593,7 +791,10 @@ export function eraseNear(w: World, brush: Pt[]): void {
           probed: p.probed,
         });
       } else {
-        for (const r of run) if (r.hist) w.histCount--;
+        for (const r of run) {
+          if (r.hist) w.histCount--;
+          bookCut(w, r.parcel);
+        }
       }
       run = [];
     };
@@ -601,9 +802,10 @@ export function eraseNear(w: World, brush: Pt[]): void {
       if (hit(p.pts[i], R_ERASE)) {
         flush();
         if (p.hist[i]) w.histCount--;
+        bookCut(w, p.parcels[i]);
       } else {
         run.push({
-          pt: p.pts[i], parcel: p.parcels[i], hist: p.hist[i], flow: p.flow[i],
+          pt: p.pts[i], parcel: p.parcels[i], cap: p.cap[i], hist: p.hist[i], flow: p.flow[i],
           inc: p.inc[i], incTick: p.incTick[i], i,
         });
       }
@@ -624,6 +826,7 @@ export function eraseNear(w: World, brush: Pt[]): void {
 export function extendVeinTail(w: World, p: Vein, pts: Pt[], tail: Tail): void {
   p.pts = [...p.pts, ...pts.map((q) => [q[0], q[1]] as Pt)];
   p.parcels = [...p.parcels, ...pts.map(() => emptyParcel(w.chem))];
+  p.cap = [...p.cap, ...pts.map(() => 0)];
   p.hist = [...p.hist, ...pts.map(() => null)];
   p.flow = [...p.flow, ...pts.map(() => 0)];
   p.inc = [...p.inc, ...pts.map(() => 0)];
@@ -636,6 +839,7 @@ export function extendVeinTail(w: World, p: Vein, pts: Pt[], tail: Tail): void {
 export function extendVeinHead(w: World, p: Vein, pts: Pt[], head: Head): void {
   p.pts = [...pts.map((q) => [q[0], q[1]] as Pt), ...p.pts];
   p.parcels = [...pts.map(() => emptyParcel(w.chem)), ...p.parcels];
+  p.cap = [...pts.map(() => 0), ...p.cap];
   p.hist = [...pts.map(() => null), ...p.hist];
   p.flow = [...pts.map(() => 0), ...p.flow];
   p.inc = [...pts.map(() => 0), ...p.inc];
@@ -650,6 +854,7 @@ export function extendVeinHead(w: World, p: Vein, pts: Pt[], head: Head): void {
 export function uniteVeins(w: World, up: Vein, bridge: Pt[], down: Vein): void {
   up.pts = [...up.pts, ...bridge.map((q) => [q[0], q[1]] as Pt), ...down.pts];
   up.parcels = [...up.parcels, ...bridge.map(() => emptyParcel(w.chem)), ...down.parcels];
+  up.cap = [...up.cap, ...bridge.map(() => 0), ...down.cap];
   up.hist = [...up.hist, ...bridge.map(() => null), ...down.hist];
   up.flow = [...up.flow, ...bridge.map(() => 0), ...down.flow];
   up.inc = [...up.inc, ...bridge.map(() => 0), ...down.inc];
@@ -697,16 +902,23 @@ export function eraseSpan(w: World, veinId: number, i0: number, i1: number): voi
   const p = w.veins.get(veinId);
   if (!p) return;
   const n = p.pts.length;
-  for (let i = i0; i <= i1 && i < n; i++) if (p.hist[i]) w.histCount--;
+  for (let i = i0; i <= i1 && i < n; i++) {
+    if (p.hist[i]) w.histCount--;
+    bookCut(w, p.parcels[i]);
+  }
   const frag = (s: number, e: number, head: Head, tail: Tail) => {
     if (e - s + 1 < 2) {
-      for (let i = s; i <= e; i++) if (p.hist[i]) w.histCount--;
+      for (let i = s; i <= e; i++) {
+        if (p.hist[i]) w.histCount--;
+        bookCut(w, p.parcels[i]);
+      }
       return;
     }
     const f: Vein = {
       id: w.nextId++,
       pts: p.pts.slice(s, e + 1),
       parcels: p.parcels.slice(s, e + 1),
+      cap: p.cap.slice(s, e + 1),
       hist: p.hist.slice(s, e + 1),
       flow: p.flow.slice(s, e + 1),
       inc: p.inc.slice(s, e + 1),
@@ -829,9 +1041,7 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
       portIn,
       portOut,
       portSide,
-      inAccum: null,
-      outReady: null,
-      sideReady: null,
+      chambers: null,
       growth: instant ? GROW_TICKS : 0,
       pending: null,
       load: 0,
@@ -852,6 +1062,7 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
         id: w.nextId++,
         pts: bPts,
         parcels: p.parcels.slice(m + 1),
+        cap: p.cap.slice(m + 1),
         hist: p.hist.slice(m + 1),
         flow: p.flow.slice(m + 1),
         inc: p.inc.slice(m + 1),
@@ -865,6 +1076,7 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
     }
     p.pts = p.pts.slice(0, m + 1);
     p.parcels = p.parcels.slice(0, m + 1);
+    p.cap = p.cap.slice(0, m + 1);
     p.hist = p.hist.slice(0, m + 1);
     p.flow = p.flow.slice(0, m + 1);
     p.inc = p.inc.slice(0, m + 1);
@@ -896,6 +1108,7 @@ export function snapshotWorld(w: World): World {
           head: { ...p.head },
           tail: { ...p.tail },
           parcels: p.parcels.map(cloneParcel),
+          cap: [...p.cap],
           hist: p.pts.map(() => null),
           flow: [...p.flow],
           inc: [...p.inc],
@@ -916,9 +1129,13 @@ export function snapshotWorld(w: World): World {
           pending: o.pending ? { ...o.pending } : null,
           ventOut: null, // view-only trackers regrow after a restore
           ventSide: null,
-          inAccum: o.inAccum ? cloneParcel(o.inAccum) : null,
-          outReady: o.outReady ? cloneParcel(o.outReady) : null,
-          sideReady: o.sideReady ? cloneParcel(o.sideReady) : null,
+          chambers: o.chambers
+            ? {
+                inlet: cloneParcel(o.chambers.inlet),
+                main: cloneParcel(o.chambers.main),
+                side: cloneParcel(o.chambers.side),
+              }
+            : null,
         } satisfies Organ,
       ]),
     ),
@@ -926,6 +1143,7 @@ export function snapshotWorld(w: World): World {
     sources: w.sources,
     nodeHash: new NodeHash<Vein>(),
     histCount: 0,
+    meters: { ...w.meters },
   };
   reindex(snap);
   return snap;

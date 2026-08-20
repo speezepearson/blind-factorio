@@ -29,7 +29,8 @@ await page.keyboard.press('g');
 await page.waitForTimeout(200);
 ok('god: probe tool appears', (await page.locator('button:has-text("Probe")').count()) === 1);
 ok('god: streams toggle appears', (await page.locator('button:has-text("Streams")').count()) === 1);
-ok('god: stickiness sliders appear', (await page.locator('.stickrow').count()) === 1);
+ok('god: stickiness sliders appear', (await page.locator('.stickrow').count()) === 2); // sliders + ledger
+ok('god: entropy ledger appears', /heart .*· vent /.test(await page.locator('.stickrow').last().innerText()));
 await rightClickPt(...spot);
 await page.waitForTimeout(400);
 {

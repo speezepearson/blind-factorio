@@ -1,4 +1,4 @@
-import { GROW_TICKS, commitVein, makeWorld, organGrown, reindex } from './world';
+import { GROW_TICKS, commitVein, makeChambers, makeWorld, organGrown, reindex } from './world';
 import type { Head, Organ, Tail, World } from './world';
 import type { Chemistry } from './chem';
 import { R_ORGAN, SEG, quant, resample } from './geom';
@@ -219,9 +219,7 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
       portIn: dec(od.in),
       portOut: dec(od.out),
       portSide: dec(od.side),
-      inAccum: null,
-      outReady: null,
-      sideReady: null,
+      chambers: null, // opened below for grown organs
       growth: GROW_TICKS,
       pending: null,
       ventOut: null,
@@ -279,6 +277,7 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
     if (upId > 0) o.pending = { upId, downId: downId !== null && downId > 0 ? downId : null };
     else o.growth = GROW_TICKS; // halves missing: arrive grown rather than stuck
   });
+  for (const o of w.organs.values()) if (organGrown(o)) o.chambers = makeChambers(chem);
   reindex(w);
   chem.setStickiness(stick);
   if (amb !== null) chem.setAmbient(amb);

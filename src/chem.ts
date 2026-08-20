@@ -23,7 +23,7 @@ export const K_CROSS = 0.15; // heat conduction between co-located veins
 export const K_AMB = 0.03; // leak to ambient, per tick
 
 const CHEM_A = 25; // pass-attempt rate
-const CHEM_S0 = Math.log(5); // per-particle entropy
+export const CHEM_S0 = Math.log(5); // per-particle entropy
 const CHEM_EA = 0.8; // pass height above the looser side
 const DT_CHEM = 0.35; // chemistry time simulated per game tick
 
@@ -55,6 +55,7 @@ export interface Chemistry {
   masks: number[];
   nsp: number;
   radcount: number[]; // radicals per species
+  bondEq: number[]; // bond energy per molecule per species, in heat quanta
   channels: Channel[];
   stick: Record<string, number>; // live stickiness (god-tunable)
   setStickiness(next: Record<string, number>): void;
@@ -95,9 +96,14 @@ export function buildChemistry(radicals: RadicalDef[]): Chemistry {
     return e;
   };
 
+  // per-species bond energies rounded to quanta ONCE; channel dEq values
+  // are exact differences of these, so the world's (U + bond) energy books
+  // balance to the quantum across any reaction history
+  const buildBondEq = (): number[] => masks.map((m) => Math.round(bondE(m) / EPS));
+
   // channels: {A,B} ⇌ {A∪B, A∩B}, subset pairs inert (skipped); the
   // union–intersection side is the tighter one by construction
-  const buildChannels = (): Channel[] => {
+  const buildChannels = (bondEq: number[]): Channel[] => {
     const out: Channel[] = [];
     for (let a = 0; a < masks.length; a++) {
       for (let b = a + 1; b < masks.length; b++) {
@@ -106,28 +112,35 @@ export function buildChemistry(radicals: RadicalDef[]): Chemistry {
         const U = A | B;
         const I = A & B;
         if (U === A || U === B) continue;
-        const dE = bondE(U) + bondE(I) - bondE(A) - bondE(B);
+        const dEq =
+          bondEq[maskToIdx.get(U)!] +
+          (I ? bondEq[maskToIdx.get(I)!] : 0) -
+          bondEq[a] -
+          bondEq[b];
         out.push({
           loose: [a, b],
           tight: I ? [maskToIdx.get(U)!, maskToIdx.get(I)!] : [maskToIdx.get(U)!],
-          dEq: Math.max(0, Math.round(dE / EPS)),
+          dEq: Math.max(0, dEq),
         });
       }
     }
     return out;
   };
 
+  const bondEq0 = buildBondEq();
   const chem: Chemistry = {
     radicals,
     species,
     masks,
     nsp: species.length,
     radcount: masks.map(popcount),
-    channels: buildChannels(),
+    bondEq: bondEq0,
+    channels: buildChannels(bondEq0),
     stick,
     setStickiness(next) {
       for (const r of radicals) stick[r.id] = next[r.id] ?? stick[r.id];
-      chem.channels = buildChannels();
+      chem.bondEq = buildBondEq();
+      chem.channels = buildChannels(chem.bondEq);
     },
     ambient: T_AMB,
     setAmbient(T) {
@@ -159,7 +172,7 @@ function gauss(): number {
   while (v === 0) v = rnd();
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
-function poisson(mean: number): number {
+export function poisson(mean: number): number {
   if (mean <= 0) return 0;
   if (mean < 30) {
     const L = Math.exp(-mean);
@@ -339,17 +352,24 @@ export function exchangeHeat(chem: Chemistry, pa: Parcel, pb: Parcel, kappa: num
   pa.U -= q;
   pb.U += q;
 }
-export function ambientLeak(chem: Chemistry, p: Parcel): void {
+// returns the quanta leaked TO ambient (negative = absorbed from it), so
+// the world's energy audit can book the boundary flow
+export function ambientLeak(chem: Chemistry, p: Parcel): number {
   const C = capOf(chem, p.c);
   if (C <= 0) {
-    p.U = 0; // any stray quanta on an empty parcel dissipate
-    return;
+    const q = p.U; // any stray quanta on an empty parcel dissipate
+    p.U = 0;
+    return q;
   }
   const T = (p.U * EPS) / C;
   let q = stochRound((K_AMB * (T - chem.ambient) * C) / EPS);
   if (q > 0) q = Math.min(q, p.U);
   p.U -= q;
-  if (p.U < 0) p.U = 0;
+  if (p.U < 0) {
+    q += p.U;
+    p.U = 0;
+  }
+  return q;
 }
 
 // ---- color: a lossy projection of composition ----

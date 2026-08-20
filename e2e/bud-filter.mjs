@@ -63,10 +63,17 @@ await ticks(320);
     !!radVein && singles(radVein.firstTotals) > 500 &&
       composites(radVein.firstTotals) < 0.2 * singles(radVein.firstTotals),
   );
+  // entropy-engine: the honest effusive filter passes EVERYTHING through
+  // the main channel — out is the mixed remainder, only the side stream is
+  // (nearly) pure. Assert the enrichment instead of out-purity.
   ok(
-    'out port emits (nearly) pure composites',
-    !!outVein && composites(outVein.firstTotals) > 500 &&
-      singles(outVein.firstTotals) < 0.3 * composites(outVein.firstTotals),
+    'out port carries the mixed remainder (composites present)',
+    !!outVein && composites(outVein.firstTotals) > 300,
+  );
+  const frac = (t) => singles(t) / Math.max(1, singles(t) + composites(t));
+  ok(
+    'side stream is singles-enriched over the out stream',
+    !!radVein && !!outVein && frac(radVein.firstTotals) > frac(outVein.firstTotals) + 0.2,
   );
   ok(
     'downstream re-equilibration is visible (rad vein grows composites)',

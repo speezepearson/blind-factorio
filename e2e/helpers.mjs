@@ -104,6 +104,8 @@ export async function launch(hash = '') {
             totals,
             firstTotals,
             lastTotals,
+            flowFirst: p.flow[0],
+            flowLast: p.flow[p.pts.length - 1],
             incCount: p.inc.reduce((a, b) => a + b, 0),
           };
         }),

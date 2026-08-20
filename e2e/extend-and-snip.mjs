@@ -29,8 +29,13 @@ await drawVein([[300, 60], [420, 80], [520, 90]]);
 }
 await ticks(90);
 {
+  // entropy-engine: flow[] is arrival flux; an extension must carry the
+  // full stream to the tail (a fork would halve it)
   const info = await worldInfo();
-  ok('full flow reaches the extended tail (no halving)', (info.veins[0].lastTotals.R ?? 0) > 8000);
+  ok(
+    'full flow reaches the extended tail (no halving)',
+    info.veins[0].flowLast > 2000 && info.veins[0].flowLast > 0.5 * info.veins[0].flowFirst,
+  );
 }
 
 // C: chain again — still one vein, still full flow
@@ -38,7 +43,10 @@ await drawVein([[520, 90], [620, 105], [700, 120]]);
 await ticks(80);
 {
   const info = await worldInfo();
-  ok('second extension: still one vein at full flow', info.veins.length === 1 && (info.veins[0].lastTotals.R ?? 0) > 8000);
+  ok(
+    'second extension: still one vein at full flow',
+    info.veins.length === 1 && info.veins[0].flowLast > 2000 && info.veins[0].flowLast > 0.5 * info.veins[0].flowFirst,
+  );
 }
 
 // vent haze: the open tail at (700,120) sprays red into the cavity
@@ -76,7 +84,10 @@ await drawVein([[700, 120], [520, 200], [355, 248]]);
 await ticks(220);
 {
   const info = await worldInfo();
-  ok('fused vein carries R end to end', (info.veins[0].lastTotals.R ?? 0) > 8000);
+  ok(
+    'fused vein carries R end to end',
+    info.veins[0].flowLast > 2000 && (info.veins[0].lastTotals.R ?? 0) > 200,
+  );
 }
 
 // a fork creates a junction; shift-click downstream severs only up to it

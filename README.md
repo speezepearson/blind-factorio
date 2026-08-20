@@ -1,5 +1,16 @@
 # Veins
 
+> **Branch `entropy-engine`** — an exploration replacing plug-flow advection and
+> the imperative filter with a thermodynamically honest engine: sites with
+> capacities, one world entropy function, biased detailed-balanced transport
+> channels (peristalsis = a finite bias), reservoir sources, absorbing vents,
+> born-collapsed veins, and an auditable boundary ledger (god mode shows it;
+> `e2e/conservation.mjs` keeps the books exact). Design + reconciliation +
+> findings: [`docs/thermodynamic-engine.md`](docs/thermodynamic-engine.md).
+> Statements below about advection ("one hop per tick", "infinite throughput,
+> nothing queues") describe `main`; here flow is a driven current that can
+> honestly stall, and organ separation is effusive and partial.
+
 A prototype of a **veins-and-organs game about doing science**. Fluids made of hidden
 *radicals* flow through veins between organs; the underlying chemistry is governed by a
 single generative law the player never sees. Observation is lossy — color is an

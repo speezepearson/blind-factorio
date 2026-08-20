@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_RADICALS, buildChemistry, tempOf } from './chem';
+import { DEFAULT_RADICALS, SCALE, buildChemistry, tempOf } from './chem';
 import type { Parcel } from './chem';
 import {
   doTick, ensureHist, eraseNear, eraseSpan, extendVeinHead, extendVeinTail, organAt, snapshotWorld,
-  sourceAt, tryBud, commitVein, resolveAttach, uniteVeins, veinSpanAt,
+  sourceAt, tryBud, commitVein, resolveAttach, uniteVeins, veinSpanAt, worldEntropy,
 } from './world';
 import type { Head, Tail, Vein, World } from './world';
 import { R_SNAP, WORLD_H, WORLD_W, dist, resample, smooth } from './geom';
@@ -601,6 +601,8 @@ export default function App() {
         tick: () => doTick(worldRef.current),
         tempOf: (p: Parcel) => tempOf(chem, p),
         resolveAttach: (att: { veinId: number; at: Pt }) => resolveAttach(worldRef.current, att),
+        entropy: () => worldEntropy(worldRef.current),
+        meters: () => worldRef.current.meters,
       };
     }
   }, []);
@@ -717,6 +719,17 @@ export default function App() {
             <span className="mono">{ambient.toFixed(2)}</span>
           </label>
           <span className="mono dim">tick {w.tick}</span>
+        </div>
+      )}
+      {godMode && (
+        <div className="stickrow">
+          <span className="label">ledger</span>
+          <span className="mono dim">
+            S {worldEntropy(w).toFixed(0)} · heart {w.meters.heartS.toFixed(0)} · src{' '}
+            {(w.meters.srcRad / SCALE).toFixed(1)} · vent {(w.meters.ventRad / SCALE).toFixed(1)} · grown{' '}
+            {(w.meters.grownRad / SCALE).toFixed(1)} · cut {(w.meters.cutRad / SCALE).toFixed(1)} · slots{' '}
+            {(w.meters.growthSlots / SCALE).toFixed(1)}
+          </span>
         </div>
       )}
       <div className="main">
