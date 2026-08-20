@@ -13,6 +13,21 @@ live in `~/` on the dev VM).
 This repo previously hosted the wavelength-optics prototype "blind-factorio"; that whole
 game is preserved at the git tag `wavelength-era`.
 
+## Experiments
+
+- **Branch `entropy-engine`** (2026-08-20): a complete, working rebuild of transport
+  and organs as thermodynamically honest physics — sites with capacities, one world
+  entropy function, biased detailed-balanced channels (peristalsis = a finite bias
+  that can honestly stall), reservoir sources, born-collapsed veins, and an audited
+  boundary ledger with exact integer conservation (its `e2e/conservation.mjs` proves
+  it; 9/9 suites green there). Design doc + implementation findings live on the
+  branch at `docs/thermodynamic-engine.md`. **Parked deliberately**: the game wants
+  to be explored in its simplest form before taking on this much machinery — `main`
+  keeps the plain one-hop-per-tick plug flow. If the second-law questions return
+  (effusive filters, flow ratchets, capacity-as-vacuum), start from that branch
+  rather than re-deriving; its doc records the traps already sprung (non-extensive
+  thermal entropy, biased wellheads, contents-keyed inflation, uncapped tau-leaps).
+
 ## Running it
 
 `npm`/`node` are not on the default PATH in this VM:
