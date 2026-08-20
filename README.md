@@ -1,5 +1,18 @@
 # Veins
 
+> **Branch `inert-pipes`** — an aggressive simplification: parcels in pipes are
+> completely inert (no reactions, no heat exchange with neighbors, crossings, or
+> ambient — a pipe is a perfect sample vial; junctions still mix, forks still
+> split). ALL chemistry and heat flow happens inside organs, now defined purely
+> as chambers + permeability channels ("organs contain the catalysts"): the
+> filter is inlet/out/side with [fast singles → side], [fast compounds → out],
+> and trace leaks, tuned so a pure 1:1 R+G feed splits its radicals ~50/50
+> between the ports (fusion happens in the inlet during residence). Chamber
+> transfers are deterministic (mean, rounded — no sampling); reaction noise
+> remains. Known casualties, accepted: the drawn-parallel-veins heat exchanger
+> and self-limiting in-vein fusion. Physics statements below about in-pipe
+> reactions and heat describe `main`.
+
 A prototype of a **veins-and-organs game about doing science**. Fluids made of hidden
 *radicals* flow through veins between organs; the underlying chemistry is governed by a
 single generative law the player never sees. Observation is lossy — color is an

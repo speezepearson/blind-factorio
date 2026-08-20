@@ -63,10 +63,13 @@ await ticks(320);
     !!radVein && singles(radVein.firstTotals) > 500 &&
       composites(radVein.firstTotals) < 0.2 * singles(radVein.firstTotals),
   );
+  // inert-pipes: the out stream is composite-DOMINATED, not pure — the out
+  // chamber is one of the only places chemistry runs, so hot RG partially
+  // cracks back to R+G right there before emission (chamber equilibrium)
   ok(
-    'out port emits (nearly) pure composites',
+    'out port emits mostly composites',
     !!outVein && composites(outVein.firstTotals) > 500 &&
-      singles(outVein.firstTotals) < 0.3 * composites(outVein.firstTotals),
+      singles(outVein.firstTotals) < 0.8 * composites(outVein.firstTotals),
   );
   ok(
     'downstream re-equilibration is visible (rad vein grows composites)',

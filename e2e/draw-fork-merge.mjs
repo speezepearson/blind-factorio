@@ -39,10 +39,16 @@ await drawVein([[26, 114], [140, 130], [200, 62]]);
 }
 await ticks(260);
 {
+  // inert-pipes: merging MIXES but never reacts — the downstream host
+  // carries R and G side by side, and no RG exists anywhere (no organ)
   const info = await worldInfo();
   const all = {};
   for (const v of info.veins) for (const [s, n] of Object.entries(v.totals)) all[s] = (all[s] ?? 0) + n;
-  ok('merged flow fuses into RG', (all.RG ?? 0) > 500);
+  const host = info.veins.find((v) => v.tail === 'open' && v.head === 'source');
+  ok(
+    'merged flow mixes R and G without reacting',
+    !!host && (host.lastTotals.R ?? 0) > 500 && (host.lastTotals.G ?? 0) > 500 && (all.RG ?? 0) === 0,
+  );
 }
 
 // undo removes the merge vein; redo restores it

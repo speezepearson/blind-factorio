@@ -1,20 +1,24 @@
 import {
   addInto, ambientLeak, cloneParcel, emptyParcel, exchangeHeat, radCount, reactParcel,
-  sourceParcel, splitHalf, stochRound, tempOf, totalParticles,
-  K_ALONG, K_CROSS, SCALE,
+  sourceParcel, splitHalf, tempOf, totalParticles,
+  K_ALONG, SCALE,
 } from './chem';
 import type { Chemistry, Parcel } from './chem';
 import {
-  NodeHash, PORT_R, R_CROSS, R_ERASE, R_ORGAN, R_SNAP, SEG, SRC_R, WORLD_H, WORLD_W,
+  NodeHash, PORT_R, R_ERASE, R_ORGAN, R_SNAP, SEG, SRC_R, WORLD_H, WORLD_W,
   circlePts, dist, resample,
 } from './geom';
 import type { Pt } from './geom';
 
 // The world is a continuous rectangle. Fluid lives in VEINS: freehand
 // curves discretized into nodes SEG apart along their arc, one parcel per
-// node, advecting node-to-node one hop per tick. Veins may pass anywhere;
-// nodes of different stretches within R_CROSS of each other exchange heat
-// but never matter.
+// node, advecting node-to-node one hop per tick.
+//
+// INERT-PIPES BRANCH: parcels in transit are sealed sample vials — no
+// reactions, no heat exchange (not with neighbors, not with crossing
+// veins, not with ambient). Junctions still mix and forks still split;
+// that's transport, not chemistry. All chemistry and all heat flow happen
+// inside organ chambers.
 //
 // A vein's endpoints attach:
 //   head:  open | source | fork (splits half of a host vein's parcel)
@@ -29,7 +33,8 @@ import type { Pt } from './geom';
 // Organs are DISCS of radius R_ORGAN, grown by budding anywhere on a vein
 // that flows in from outside the disc; the in-disc stretch is eaten and the
 // ports sit where the curve pierced the membrane. One organ type exists so
-// far — the radical filter — hard-coded in organProcess().
+// far — the radical filter — defined as chamber + channel DATA above
+// organProcess().
 
 export const HIST = 400; // rolling probe-history window, ticks
 const HIST_CAP = 1600; // max nodes carrying passive history
@@ -70,9 +75,12 @@ export interface Organ {
   portIn: Pt;
   portOut: Pt;
   portSide: Pt;
-  inAccum: Parcel | null;
-  outReady: Parcel | null;
-  sideReady: Parcel | null;
+  // INERT-PIPES BRANCH: an organ is three chambers wired by permeability
+  // channels; ALL chemistry and heat flow in the world happens inside
+  // them. Null while growing. `inlet` accumulates the feed and drains
+  // through the channels; `out`/`side` are consumed whole by the attached
+  // veins each tick (or vent if a port has no live vein).
+  chambers: { inlet: Parcel; out: Parcel; side: Parcel } | null;
   // A freshly budded organ grows over GROW_TICKS ticks. While growing it
   // swallows its feed and emits nothing. Budding snips the host vein once,
   // locally, at the organ's center; the two halves stay intact (hidden
@@ -283,35 +291,11 @@ export function doTick(w: World): void {
   // 0) INCARNATION — ghost veins grow real where they touch live network
   if (w.tick % INC_PERIOD === 0) growthStep(w);
 
-  // 1) HEAT — along chains, between nearby nodes (any two incarnate nodes
-  // within R_CROSS that aren't chain neighbors: crossings, parallel runs,
-  // even a vein's own hairpins), and ambient leak. Ghost nodes take no part.
-  for (const p of w.veins.values()) {
-    for (let i = 0; i + 1 < p.parcels.length; i++) {
-      if (p.inc[i] && p.inc[i + 1]) exchangeHeat(chem, p.parcels[i], p.parcels[i + 1], K_ALONG);
-    }
-  }
-  for (const p of w.veins.values()) {
-    for (let i = 0; i < p.pts.length; i++) {
-      if (!p.inc[i]) continue;
-      const near = w.nodeHash
-        .near(p.pts[i], R_CROSS)
-        .filter(
-          (ref) =>
-            (ref.vein.id > p.id || (ref.vein.id === p.id && ref.idx > i + 1)) && ref.vein.inc[ref.idx] === 1,
-        )
-        .sort((u, v) => u.vein.id - v.vein.id || u.idx - v.idx);
-      for (const ref of near) exchangeHeat(chem, p.parcels[i], ref.vein.parcels[ref.idx], K_CROSS);
-    }
-  }
-  for (const p of w.veins.values()) {
-    for (let i = 0; i < p.parcels.length; i++) if (p.inc[i]) ambientLeak(chem, p.parcels[i]);
-  }
-
-  // 2) REACTIONS
-  for (const p of w.veins.values()) {
-    for (let i = 0; i < p.parcels.length; i++) if (p.inc[i]) reactParcel(chem, p.parcels[i]);
-  }
+  // 1+2) PIPES ARE INERT. No reactions, no conduction, no ambient leak —
+  // a parcel in transit is a sealed sample vial: its composition and heat
+  // are exactly what its origin gave it (junctions still mix and forks
+  // still split — that's transport, not chemistry). All chemistry and all
+  // heat flow happens inside organ chambers, in organProcess().
 
   // 3) ADVECTION — veins have infinite throughput: everything advances one
   // node every tick, nothing ever queues. Fluid that runs out of vein
@@ -326,6 +310,7 @@ export function doTick(w: World): void {
     }
   }
   const tailOut = new Map<number, Parcel>();
+  const inFlux = new Map<number, number>(); // radicals delivered per organ this tick (load pulse)
   for (const p of w.veins.values()) {
     const n = p.pts.length;
     if (p.inc[n - 1]) tailOut.set(p.id, p.parcels[n - 1]);
@@ -335,11 +320,14 @@ export function doTick(w: World): void {
       else if (p.head.type === 'fork') fill = headIn.get(p.id) ?? null;
       else if (p.head.type === 'port') {
         const o = w.organs.get(p.head.organId);
-        if (o) {
-          const slot = p.head.port === 'side' ? 'sideReady' : 'outReady';
-          if (o[slot]) {
-            fill = o[slot];
-            o[slot] = null;
+        // the vein drinks the whole staging chamber; a fresh parcel is
+        // born here and the chamber's ledgers zero (organs create parcels)
+        if (o?.chambers) {
+          const ch = p.head.port === 'side' ? o.chambers.side : o.chambers.out;
+          if (totalParticles(chem, ch.c) > 0 || ch.U > 0) {
+            fill = cloneParcel(ch);
+            ch.c.fill(0);
+            ch.U = 0;
           }
         }
       }
@@ -362,10 +350,11 @@ export function doTick(w: World): void {
       if (seg && seg.vein.inc[seg.idx]) addInto(chem, seg.vein.parcels[seg.idx], out);
     } else if (p.tail.type === 'organ-in') {
       const o = w.organs.get(p.tail.organId);
-      // a growing organ swallows its feed (it's building itself with it)
-      if (o && organGrown(o)) {
-        if (o.inAccum) addInto(chem, o.inAccum, out);
-        else o.inAccum = out;
+      // a growing organ swallows its feed (it's building itself with it);
+      // a grown one takes it into the inlet chamber (input parcels die here)
+      if (o?.chambers) {
+        addInto(chem, o.chambers.inlet, out);
+        inFlux.set(o.id, (inFlux.get(o.id) ?? 0) + radCount(chem, out.c));
       }
     }
     // open tails vent (discarded)
@@ -376,13 +365,10 @@ export function doTick(w: World): void {
   for (const o of w.organs.values()) {
     if (!organGrown(o)) {
       o.growth++;
-      o.outReady = null;
-      o.sideReady = null;
-      o.inAccum = null;
       if (organGrown(o)) completeBud(w, o);
       continue;
     }
-    organProcess(w, o);
+    organProcess(w, o, inFlux.get(o.id) ?? 0);
   }
 
   // 4) RECORD
@@ -489,47 +475,99 @@ function completeBud(w: World, o: Organ): void {
       bridgeToPoint(w, down, 'head', o.portOut);
     } else deleteVein(w, down);
   }
+  o.chambers = makeChambers(w.chem); // the chambers open for business
   reindex(w);
   healAttachments(w);
 }
 
-// The radical filter, the one organ so far: free radicals (single-radical
-// species) exit the side port, composites pass through to out. Heat splits
-// in proportion to the radicals each stream carries.
-function organProcess(w: World, o: Organ): void {
+// ---- organs as chambers + channels ----------------------------------------
+// An organ is DATA: chambers, and channels between them with per-species
+// permeability (the fraction of a chamber's stock that crosses per tick —
+// deterministic: mean of the binomial, rounded, no sampling). Heat rides
+// each crossing in proportion to the radicals it carries. Since pipes are
+// inert, the chambers are the only places in the world where reactions run
+// and heat moves — "organs contain the catalysts."
+//
+// The radical filter: free radicals permeate readily into the side
+// chamber, composites into the out chamber, each with only a trace leak
+// the other way. Fed unreacted singles, its inlet chamber is also where
+// they fuse — so the out stream's compound flux is set by the fusion rate
+// during the inlet's residence time (drain permeabilities tune this; the
+// values below give a pure 1:1 R+G feed about a 50/50 radical split
+// between the two ports).
+type ChamberName = 'inlet' | 'out' | 'side';
+interface OrganChannel {
+  from: ChamberName;
+  to: ChamberName;
+  perm: (chem: Chemistry, s: number) => number;
+}
+// Singles drain to side slowly enough that roughly half of a 1:1 R+G feed
+// fuses during its inlet residence (fusion ≈ 0.08/tick per single at
+// these stocks); compounds drain to out fast so they don't crack back.
+const P_SIDE_SINGLE = 0.08;
+const P_OUT_COMPOUND = 0.5;
+const P_LEAK = 0.005;
+const FILTER_CHANNELS: OrganChannel[] = [
+  { from: 'inlet', to: 'side', perm: (chem, s) => (chem.radcount[s] === 1 ? P_SIDE_SINGLE : P_LEAK) },
+  { from: 'inlet', to: 'out', perm: (chem, s) => (chem.radcount[s] === 1 ? P_LEAK : P_OUT_COMPOUND) },
+];
+
+export const makeChambers = (chem: Chemistry): NonNullable<Organ['chambers']> => ({
+  inlet: emptyParcel(chem),
+  out: emptyParcel(chem),
+  side: emptyParcel(chem),
+});
+
+function organProcess(w: World, o: Organ, inputRad: number): void {
   const chem = w.chem;
-  // unconsumed previous output vents — note it for the haze before dropping
-  const note = (slot: Parcel | null, prev: Organ['ventOut']): Organ['ventOut'] => {
-    if (slot && totalParticles(chem, slot.c) > 0) {
-      return { rate: (prev?.rate ?? 0) * 0.9 + radCount(chem, slot.c) * 0.1, c: slot.c };
+  if (!o.chambers) return;
+  const ch = o.chambers;
+  // out/side still holding fluid were not consumed by a live vein this
+  // tick: the port vents into the cavity — note it for the haze, then drop
+  const note = (slot: Parcel, prev: Organ['ventOut']): Organ['ventOut'] => {
+    if (totalParticles(chem, slot.c) > 0) {
+      const v = { rate: (prev?.rate ?? 0) * 0.9 + radCount(chem, slot.c) * 0.1, c: new Int32Array(slot.c) };
+      slot.c.fill(0);
+      slot.U = 0;
+      return v;
     }
     if (prev && prev.rate * 0.9 > 20) return { rate: prev.rate * 0.9, c: prev.c };
     return null;
   };
-  o.ventOut = note(o.outReady, o.ventOut);
-  o.ventSide = note(o.sideReady, o.ventSide);
-  o.outReady = null;
-  o.sideReady = null;
-  const inp = o.inAccum;
-  o.inAccum = null;
-  o.load = o.load * 0.9 + (inp ? radCount(chem, inp.c) : 0) * 0.1;
-  if (!inp || totalParticles(chem, inp.c) === 0) return;
-  const main: Parcel = { c: new Int32Array(chem.nsp), U: 0 };
-  const side: Parcel = { c: new Int32Array(chem.nsp), U: 0 };
-  for (let i = 0; i < chem.nsp; i++) {
-    if (chem.radcount[i] === 1) side.c[i] = inp.c[i];
-    else main.c[i] = inp.c[i];
+  o.ventOut = note(ch.out, o.ventOut);
+  o.ventSide = note(ch.side, o.ventSide);
+  o.load = o.load * 0.9 + inputRad * 0.1;
+  // channels: deterministic permeability flow, heat riding proportionally
+  for (const c of FILTER_CHANNELS) {
+    const from = ch[c.from];
+    const to = ch[c.to];
+    const fromRad = radCount(chem, from.c);
+    if (fromRad === 0) continue;
+    let moved = 0;
+    for (let s = 0; s < chem.nsp; s++) {
+      const k = Math.round(c.perm(chem, s) * from.c[s]);
+      if (k === 0) continue;
+      from.c[s] -= k;
+      to.c[s] += k;
+      moved += k * chem.radcount[s];
+    }
+    if (moved > 0 && from.U > 0) {
+      const q = Math.min(from.U, Math.round((from.U * moved) / fromRad));
+      from.U -= q;
+      to.U += q;
+    }
   }
-  const rm = radCount(chem, main.c);
-  const rs = radCount(chem, side.c);
-  const tot = rm + rs;
-  if (tot > 0) {
-    side.U = stochRound(inp.U * (rs / tot));
-    side.U = Math.max(0, Math.min(side.U, inp.U));
-    main.U = inp.U - side.U;
-  } else main.U = inp.U;
-  o.outReady = main;
-  o.sideReady = side;
+  // the world's only chemistry and heat flow: chamber reactions, chamber-
+  // to-chamber conduction, and ambient leak through the organ's membrane
+  reactParcel(chem, ch.inlet);
+  reactParcel(chem, ch.out);
+  reactParcel(chem, ch.side);
+  exchangeHeat(chem, ch.inlet, ch.out, K_ALONG);
+  exchangeHeat(chem, ch.inlet, ch.side, K_ALONG);
+  exchangeHeat(chem, ch.out, ch.side, K_ALONG);
+  ambientLeak(chem, ch.inlet);
+  ambientLeak(chem, ch.out);
+  ambientLeak(chem, ch.side);
 }
 
 // ---------------- editing ops ----------------
@@ -829,9 +867,7 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
       portIn,
       portOut,
       portSide,
-      inAccum: null,
-      outReady: null,
-      sideReady: null,
+      chambers: null,
       growth: instant ? GROW_TICKS : 0,
       pending: null,
       load: 0,
@@ -916,9 +952,13 @@ export function snapshotWorld(w: World): World {
           pending: o.pending ? { ...o.pending } : null,
           ventOut: null, // view-only trackers regrow after a restore
           ventSide: null,
-          inAccum: o.inAccum ? cloneParcel(o.inAccum) : null,
-          outReady: o.outReady ? cloneParcel(o.outReady) : null,
-          sideReady: o.sideReady ? cloneParcel(o.sideReady) : null,
+          chambers: o.chambers
+            ? {
+                inlet: cloneParcel(o.chambers.inlet),
+                out: cloneParcel(o.chambers.out),
+                side: cloneParcel(o.chambers.side),
+              }
+            : null,
         } satisfies Organ,
       ]),
     ),
