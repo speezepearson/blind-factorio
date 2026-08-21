@@ -547,7 +547,10 @@ const isFuel = (chem: Chemistry, s: number) => chem.radcount[s] === chem.radical
 const FUEL_SOURCE_FRAC = 0.05; // fuel wellheads trickle at this fraction of SCALE
 const FUEL_YOLK = 20000;
 const ATROPHY_MIN = 100; // fuel particles: below this the organ is starving
-const ATROPHY_TICKS = 400; // sustained starvation before dissolution
+// Atrophy is as snappy as organogenesis: the reservoir itself is the buffer
+// (a supply interruption only bites after the stock burns down), so the
+// dwell just rides out flickers. An organ whose fuel is gone is gone.
+const ATROPHY_TICKS = 3;
 // fuel-chamber drains: cracked products join the process stream briskly;
 // unburned fuel only seeps (the reservoir holds it) — slower than a warm
 // chamber burns, so a working organ consumes its fuel rather than wasting

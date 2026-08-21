@@ -32,6 +32,17 @@ await ticks(12); // GROW_TICKS = 10: organ finishes and trims to its membrane
   ok('grown organ claims the downstream half', !info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
 }
 
+// feed the organ: a hot filter burns through its yolk in ~70 ticks and
+// atrophy is snappy, so an unfueled organ would dissolve mid-test. The
+// fuel port lands deterministically at (448,12); approach along the top.
+await drawVein([[26, 474], [120, 300], [220, 100], [330, 14], [440, 10], [448, 12]]);
+{
+  const fueled = await page.evaluate(() =>
+    [...window.__veins.world().veins.values()].some((v) => v.tail.type === 'organ-in' && v.tail.port === 'fuel'),
+  );
+  ok('fuel line took the fuel port', fueled);
+}
+
 // grow veins from both output ports, straight away from the organ center
 const ports = await page.evaluate(() => {
   const o = [...window.__veins.world().organs.values()][0];
