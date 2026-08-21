@@ -20,9 +20,10 @@ await dblClickPt(420, 290);
   const info = await worldInfo();
   ok('bud accepted on a curve', info.organs.length === 1);
   const o = info.organs[0];
-  ok('in port sits on the membrane', Math.abs(dist(o.portIn, [o.cx, o.cy]) - o.r) < 18);
-  ok('out port sits on the membrane', Math.abs(dist(o.portOut, [o.cx, o.cy]) - o.r) < 18);
-  ok('ports are distinct wall crossings', dist(o.portIn, o.portOut) > 30);
+  const port = (org, key) => org.ports.find((q) => q.key === key).pt;
+  ok('in port sits on the membrane', Math.abs(dist(port(o, 'in'), [o.cx, o.cy]) - o.r) < 18);
+  ok('out port sits on the membrane', Math.abs(dist(port(o, 'out'), [o.cx, o.cy]) - o.r) < 18);
+  ok('ports are distinct wall crossings', dist(port(o, 'in'), port(o, 'out')) > 30);
   // budding is local: feeder attaches immediately; the downstream half
   // stays detached (open/open) until the organ finishes and claims it
   ok('feeder attached, continuation detached', info.veins.some((v) => v.tail === 'organ-in') && info.veins.some((v) => v.head === 'open' && v.tail === 'open'));
@@ -47,8 +48,9 @@ await dblClickPt(200, 168);
   const info = await worldInfo();
   ok('bud accepted over a terminating vein', info.organs.length === 2);
   const o = info.organs[1];
-  ok('terminating vein: out port relocated to the rim', Math.abs(dist(o.portOut, [o.cx, o.cy]) - o.r) < 6);
-  ok('relocated out port is away from the in port', dist(o.portOut, o.portIn) > 40);
+  const port = (org, key) => org.ports.find((q) => q.key === key).pt;
+  ok('terminating vein: out port relocated to the rim', Math.abs(dist(port(o, 'out'), [o.cx, o.cy]) - o.r) < 6);
+  ok('relocated out port is away from the in port', dist(port(o, 'out'), port(o, 'in')) > 40);
 }
 
 await finish(d);

@@ -14,13 +14,15 @@ export interface Preset {
 const curve = (...waypoints: Pt[]): Pt[] => resample(smooth(waypoints, 3), SEG);
 
 // A worked example: an R vein and a G vein merge and meander east — the
-// joined stretch turns yellow and warms as fusion releases bond energy —
-// then a radical filter splits survivors from composites. Sources sit at
-// (26, 42 + 72·spIdx): R (26,42), G (26,114).
+// joined stretch runs yellow (mixed, inert in the pipe) — then a radical
+// filter fuses and splits it, fed fuel from the weak RGB wellhead at the
+// bottom of the map. Sources sit at (26, 42 + 72·spIdx): R (26,42),
+// G (26,114), … RGB (26,474).
 function buildDemo(chem: Chemistry): World {
   const w = makeWorld(chem);
   const R = chem.speciesIndex('R');
   const G = chem.speciesIndex('G');
+  const RGB = chem.speciesIndex('RGB');
   // wild anatomy is born incarnate — only player-drawn veins start as ghosts
   const trunk = commitVein(
     w,
@@ -42,6 +44,25 @@ function buildDemo(chem: Chemistry): World {
     true,
   );
   tryBud(w, [540, 305], { instant: true });
+  // fuel line: the RGB wellhead trickles into the filter's fuel port,
+  // approaching from the port's outward side (never tunneling under the
+  // organ body — the same route a player's pen would have to take)
+  const organ = [...w.organs.values()][0];
+  const fuel = organ.ports.find((p) => p.key === 'fuel')!;
+  const outward: Pt = [
+    fuel.pt[0] + (fuel.pt[0] - organ.c[0]) * 1.6,
+    fuel.pt[1] + (fuel.pt[1] - organ.c[1]) * 1.6,
+  ];
+  const fuelPts = curve([44, 474], [200, 520], [380, 480], outward, [fuel.pt[0], fuel.pt[1]]);
+  while (fuelPts.length && Math.hypot(fuelPts[fuelPts.length - 1][0] - fuel.pt[0], fuelPts[fuelPts.length - 1][1] - fuel.pt[1]) < 8) fuelPts.pop();
+  fuelPts.push([fuel.pt[0], fuel.pt[1]]);
+  commitVein(
+    w,
+    fuelPts,
+    { type: 'source', spIdx: RGB },
+    { type: 'organ-in', organId: organ.id, port: 'fuel' },
+    true,
+  );
   return w;
 }
 

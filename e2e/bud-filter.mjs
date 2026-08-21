@@ -35,7 +35,8 @@ await ticks(12); // GROW_TICKS = 10: organ finishes and trims to its membrane
 // grow veins from both output ports, straight away from the organ center
 const ports = await page.evaluate(() => {
   const o = [...window.__veins.world().organs.values()][0];
-  return { c: o.c, out: o.portOut, side: o.portSide };
+  const at = (key) => o.ports.find((p) => p.key === key).pt;
+  return { c: o.c, out: at('out'), side: at('side') };
 });
 const away = (pt, c, len) => {
   const dx = pt[0] - c[0];

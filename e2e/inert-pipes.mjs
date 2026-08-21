@@ -12,7 +12,10 @@ const r = await page.evaluate(() => {
   const w = window.__veins.world();
   const chem = window.__veins.chem;
   const idxRG = chem.speciesIndex('RG');
-  const trunk = [...w.veins.values()].find((v) => v.head.type === 'source' && v.tail.type === 'organ-in');
+  // the R+G trunk, not the RGB fuel line (both run source -> organ-in now)
+  const trunk = [...w.veins.values()].find(
+    (v) => v.head.type === 'source' && v.tail.type === 'organ-in' && v.tail.port === 'in',
+  );
   const outV = [...w.veins.values()].find((v) => v.head.type === 'port' && v.head.port === 'out');
   let trunkRG = 0;
   let trunkR = 0;

@@ -233,10 +233,10 @@ export const tempOf = (chem: Chemistry, p: Parcel) => {
 export function emptyParcel(chem: Chemistry): Parcel {
   return { c: new Int32Array(chem.nsp), U: 0 };
 }
-export function sourceParcel(chem: Chemistry, spIdx: number): Parcel {
+export function sourceParcel(chem: Chemistry, spIdx: number, frac = 1): Parcel {
   const c = new Int32Array(chem.nsp);
-  c[spIdx] = SCALE;
-  return { c, U: Math.round((CR * SCALE * chem.radcount[spIdx] * chem.ambient) / EPS) };
+  c[spIdx] = Math.round(SCALE * frac);
+  return { c, U: Math.round((CR * c[spIdx] * chem.radcount[spIdx] * chem.ambient) / EPS) };
 }
 export function cloneParcel(p: Parcel): Parcel {
   return { c: new Int32Array(p.c), U: p.U };

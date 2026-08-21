@@ -9,7 +9,7 @@ await pause();
 {
   const info = await worldInfo();
   ok('demo boots with veins + organ', info.veins.length >= 2 && info.organs.length === 1);
-  ok('sources attached', info.veins.filter((v) => v.head === 'source').length === 2);
+  ok('sources attached', info.veins.filter((v) => v.head === 'source').length === 3); // R, G, and the RGB fuel line
 }
 
 await ticks(400);

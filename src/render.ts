@@ -1,6 +1,6 @@
 import { fluidRGB, speciesColor, tempOf, SCALE } from './chem';
 import type { Chemistry } from './chem';
-import { GROW_TICKS, INC_PERIOD, organGrown, resolveAttach } from './world';
+import { GROW_TICKS, INC_PERIOD, ORGAN_SPECS, organGrown, resolveAttach } from './world';
 import type { Vein, World } from './world';
 import { PORT_R, SRC_R, WORLD_H, WORLD_W, dist, posAt } from './geom';
 import type { Pt } from './geom';
@@ -14,7 +14,7 @@ import type { Pt } from './geom';
 export type Tool = 'draw' | 'erase' | 'probe';
 
 export type DragState =
-  | { kind: 'draw'; pts: Pt[]; endOrganIn?: number }
+  | { kind: 'draw'; pts: Pt[]; endOrganIn?: { organId: number; port: string } }
   | { kind: 'erase'; pts: Pt[] }
   | null;
 
@@ -177,14 +177,13 @@ function drawVents(ctx: CanvasRenderingContext2D, view: ViewState): void {
   }
   for (const o of w.organs.values()) {
     if (!organGrown(o)) continue;
-    const port = (vent: { rate: number; c: Int32Array } | null, pt: Pt) => {
-      if (!vent || vent.rate < SCALE * 0.01) return;
+    for (const [key, vent] of Object.entries(o.vents)) {
+      if (vent.rate < SCALE * 0.01) continue;
       const rgb = fluidRGB(chem, vent.c);
-      if (!rgb) return;
-      drawHaze(ctx, pt, norm(o.c, pt), rgb, vent.rate, t);
-    };
-    port(o.ventOut, o.portOut);
-    port(o.ventSide, o.portSide);
+      if (!rgb) continue;
+      const port = o.ports.find((q) => q.key === key);
+      if (port) drawHaze(ctx, port.pt, norm(o.c, port.pt), rgb, vent.rate, t);
+    }
   }
 }
 
@@ -460,6 +459,20 @@ function drawChevrons(ctx: CanvasRenderingContext2D, view: ViewState, p: Vein): 
 
 // ---- organs --------------------------------------------------------------
 
+// port pigments by key — the distinct color is the only labeling a port
+// gets; functions stay unnamed even for gods. Fuel ports are violet, the
+// exchanger's stream ports warm/cool with their duty.
+const PORT_COLORS: Record<string, string> = {
+  in: '74,122,82',
+  out: '74,95,122',
+  side: '154,95,58',
+  fuel: '122,74,130',
+  'hot-in': '150,74,74',
+  'cold-in': '74,110,140',
+  'hot-out': '170,90,60',
+  'cold-out': '90,120,150',
+};
+
 // a soft double-thump heartbeat envelope, 0..1
 function heartbeat(t: number): number {
   const s = ((t % 1) + 1) % 1;
@@ -535,8 +548,10 @@ function drawOrgans(ctx: CanvasRenderingContext2D, view: ViewState): void {
       ctx.font = '700 10px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('RADICAL', o.c[0], o.c[1] - 5);
-      ctx.fillText('FILTER', o.c[0], o.c[1] + 6);
+      const lines = ORGAN_SPECS[o.kind].label;
+      lines.forEach((line, i) => {
+        ctx.fillText(line, o.c[0], o.c[1] + (i - (lines.length - 1) / 2) * 11);
+      });
     }
 
     // ports are pigment splotches ON the membrane: anchored to the wobbling
@@ -558,9 +573,10 @@ function drawOrgans(ctx: CanvasRenderingContext2D, view: ViewState): void {
       ctx.fillStyle = `rgb(${rgb})`;
       ctx.fill();
     };
-    splotch(o.portIn, '74,122,82', o.id * 0.9 + 1);
-    splotch(o.portOut, '74,95,122', o.id * 0.9 + 4);
-    splotch(o.portSide, '154,95,58', o.id * 0.9 + 7);
+    o.ports.forEach((port, i) => {
+      const rgb = PORT_COLORS[port.key] ?? (port.dir === 'in' ? '74,122,82' : '74,95,122');
+      splotch(port.pt, rgb, o.id * 0.9 + 1 + i * 3);
+    });
     ctx.restore();
   }
 }

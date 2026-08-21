@@ -108,8 +108,8 @@ export async function launch(hash = '') {
           };
         }),
         organs: [...w.organs.values()].map((o) => ({
-          cx: o.c[0], cy: o.c[1], r: o.r, growth: o.growth, load: o.load,
-          portIn: o.portIn, portOut: o.portOut, portSide: o.portSide,
+          cx: o.c[0], cy: o.c[1], r: o.r, kind: o.kind, growth: o.growth, load: o.load, starve: o.starve,
+          ports: o.ports.map((p) => ({ key: p.key, dir: p.dir, pt: p.pt })),
         })),
         maxTemp: Math.max(
           1,

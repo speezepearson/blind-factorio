@@ -1,7 +1,7 @@
 import { GROW_TICKS, commitVein, makeChambers, makeWorld, organGrown, reindex } from './world';
-import type { Head, Organ, Tail, World } from './world';
+import type { Head, Organ, OrganPort, Tail, World } from './world';
 import type { Chemistry } from './chem';
-import { R_ORGAN, SEG, quant, resample } from './geom';
+import { R_ORGAN, SEG, circlePts, dist, quant, resample } from './geom';
 import type { Pt } from './geom';
 
 // World <-> shareable code: JSON, deflated, URL-safe base64. Serializes
@@ -30,22 +30,34 @@ type HeadDoc =
   | { type: 'open' }
   | { type: 'source'; spIdx: number }
   | { type: 'fork'; veinId: number; at: PtDoc } // veinId = index into veins array
-  | { type: 'port'; organId: number; port: 'out' | 'side' }; // organId = index into organs array
+  | { type: 'port'; organId: number; port: string }; // organId = index into organs array
 type TailDoc =
   | { type: 'open' }
   | { type: 'merge'; veinId: number; at: PtDoc }
-  | { type: 'organ-in'; organId: number };
+  | { type: 'organ-in'; organId: number; p?: string }; // p = in-port key (absent in old codes = 'in')
+
+interface PortDoc {
+  k: string;
+  d: 'in' | 'out';
+  ch: string;
+  pt: PtDoc;
+}
 
 interface OrganDoc {
   c: PtDoc;
   r: number;
-  in: PtDoc;
-  out: PtDoc;
-  side: PtDoc;
-  // present only for organs exported mid-growth: ticks grown + the two
-  // snipped host halves (as vein-array indices) awaiting the completion trim
+  kind?: string; // absent in old codes = 'filter'
+  ports?: PortDoc[];
+  // legacy port trio from codes that predate organ-as-data; migrated to a
+  // filter port set (with a fuel port synthesized on the free rim)
+  in?: PtDoc;
+  out?: PtDoc;
+  side?: PtDoc;
+  // present only for organs exported mid-growth: ticks grown + the vein
+  // ends (as vein-array indices) awaiting the completion trim
   g?: number;
-  up?: number;
+  trims?: Array<{ v: number; e: 'h' | 't'; p: string }>;
+  up?: number; // legacy mid-growth halves
   down?: number;
 }
 
@@ -111,7 +123,7 @@ export async function worldToCode(w: World): Promise<string> {
     t.type === 'merge'
       ? { type: 'merge', veinId: veinIndex.get(t.veinId) ?? -1, at: enc(t.at) }
       : t.type === 'organ-in'
-        ? { type: 'organ-in', organId: organIndex.get(t.organId) ?? -1 }
+        ? { type: 'organ-in', organId: organIndex.get(t.organId) ?? -1, p: t.port }
         : t;
   const doc: WorldDoc = {
     rv: 2,
@@ -126,16 +138,18 @@ export async function worldToCode(w: World): Promise<string> {
     organs: organs.map((o) => ({
       c: enc(o.c),
       r: o.r,
-      in: enc(o.portIn),
-      out: enc(o.portOut),
-      side: enc(o.portSide),
+      kind: o.kind,
+      ports: o.ports.map((p) => ({ k: p.key, d: p.dir, ch: p.chamber, pt: enc(p.pt) })),
       // mid-growth organs round-trip their growth state so completion (the
       // membrane trim + port attachment) still happens after import
       ...(o.pending
         ? {
             g: o.growth,
-            up: veinIndex.get(o.pending.upId) ?? -1,
-            ...(o.pending.downId !== null ? { down: veinIndex.get(o.pending.downId) ?? -1 } : {}),
+            trims: o.pending.trims.map((t) => ({
+              v: veinIndex.get(t.veinId) ?? -1,
+              e: t.end === 'head' ? ('h' as const) : ('t' as const),
+              p: t.port,
+            })),
           }
         : {}),
     })),
@@ -210,24 +224,53 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
   const amb = Number.isFinite(ambRaw) ? Math.max(0.05, Math.min(10, ambRaw)) : null;
 
   const organIds: number[] = [];
+  const imported: Array<{ o: Organ; od: OrganDoc }> = [];
   for (const od of Array.isArray(doc.organs) ? doc.organs : []) {
-    if (!isPtDoc(od.c) || !isPtDoc(od.in) || !isPtDoc(od.out) || !isPtDoc(od.side)) continue;
+    if (!isPtDoc(od.c)) continue;
+    const c = dec(od.c);
+    const r = Number.isFinite(od.r) && od.r > 8 ? od.r : R_ORGAN;
+    const portDocs = Array.isArray(od.ports)
+      ? od.ports.filter(
+          (pd) =>
+            pd && typeof pd.k === 'string' && (pd.d === 'in' || pd.d === 'out') &&
+            typeof pd.ch === 'string' && isPtDoc(pd.pt),
+        )
+      : [];
+    let ports: OrganPort[];
+    if (portDocs.length > 0) {
+      ports = portDocs.map((pd) => ({ key: pd.k, dir: pd.d, chamber: pd.ch, pt: dec(pd.pt) }));
+    } else if (isPtDoc(od.in) && isPtDoc(od.out) && isPtDoc(od.side)) {
+      // legacy trio: a filter from before organ-as-data — synthesize its
+      // fuel port on the stretch of rim farthest from the existing three
+      const trio = [dec(od.in), dec(od.out), dec(od.side)];
+      const fuelPt = circlePts(c, r).reduce((best, pt) => {
+        const d = Math.min(...trio.map((q) => dist(pt, q)));
+        const bd = Math.min(...trio.map((q) => dist(best, q)));
+        return d > bd ? pt : best;
+      });
+      ports = [
+        { key: 'in', dir: 'in', chamber: 'inlet', pt: trio[0] },
+        { key: 'fuel', dir: 'in', chamber: 'fuel', pt: fuelPt },
+        { key: 'out', dir: 'out', chamber: 'out', pt: trio[1] },
+        { key: 'side', dir: 'out', chamber: 'side', pt: trio[2] },
+      ];
+    } else continue;
     const o: Organ = {
       id: w.nextId++,
-      c: dec(od.c),
-      r: Number.isFinite(od.r) && od.r > 8 ? od.r : R_ORGAN,
-      portIn: dec(od.in),
-      portOut: dec(od.out),
-      portSide: dec(od.side),
+      kind: od.kind === 'exchanger' ? 'exchanger' : 'filter',
+      c,
+      r,
+      ports,
       chambers: null, // opened below for grown organs
       growth: GROW_TICKS,
       pending: null,
-      ventOut: null,
-      ventSide: null,
       load: 0,
+      starve: 0,
+      vents: {},
     };
     w.organs.set(o.id, o);
     organIds.push(o.id);
+    imported.push({ o, od });
   }
   const veinIds: number[] = [];
   const pending: Array<{ veinIdx: number; head: HeadDoc; tail: TailDoc }> = [];
@@ -259,25 +302,42 @@ export async function worldFromCode(chem: Chemistry, code: string): Promise<Worl
     } else if (head?.type === 'fork' && veinIds[head.veinId] > 0 && isPtDoc(head.at)) {
       p.head = { type: 'fork', veinId: veinIds[head.veinId], at: dec(head.at) };
     } else if (head?.type === 'port' && organIds[head.organId] > 0) {
-      p.head = { type: 'port', organId: organIds[head.organId], port: head.port === 'side' ? 'side' : 'out' };
+      const o = w.organs.get(organIds[head.organId])!;
+      const key = o.ports.some((q) => q.key === head.port && q.dir === 'out')
+        ? head.port
+        : (o.ports.find((q) => q.dir === 'out')?.key ?? 'out');
+      p.head = { type: 'port', organId: o.id, port: key };
     }
     if (tail?.type === 'merge' && veinIds[tail.veinId] > 0 && isPtDoc(tail.at)) {
       p.tail = { type: 'merge', veinId: veinIds[tail.veinId], at: dec(tail.at) };
     } else if (tail?.type === 'organ-in' && organIds[tail.organId] > 0) {
-      p.tail = { type: 'organ-in', organId: organIds[tail.organId] };
+      const o = w.organs.get(organIds[tail.organId])!;
+      const key = typeof tail.p === 'string' && o.ports.some((q) => q.key === tail.p && q.dir === 'in')
+        ? tail.p
+        : (o.ports.find((q) => q.dir === 'in')?.key ?? 'in');
+      p.tail = { type: 'organ-in', organId: o.id, port: key };
     }
   }
-  // reconnect mid-growth organs to their snipped halves
-  const organDocs = Array.isArray(doc.organs) ? doc.organs : [];
-  [...w.organs.values()].forEach((o, i) => {
-    const od = organDocs[i];
-    if (!od || organGrown(o)) return;
-    const upId = Number.isInteger(od.up) ? veinIds[od.up!] : -1;
-    const downId = od.down !== undefined && Number.isInteger(od.down) ? veinIds[od.down] : null;
-    if (upId > 0) o.pending = { upId, downId: downId !== null && downId > 0 ? downId : null };
-    else o.growth = GROW_TICKS; // halves missing: arrive grown rather than stuck
-  });
-  for (const o of w.organs.values()) if (organGrown(o)) o.chambers = makeChambers(chem);
+  // reconnect mid-growth organs to the vein ends awaiting their trim
+  for (const { o, od } of imported) {
+    if (!Number.isInteger(od.g) || od.g! >= GROW_TICKS) continue;
+    const trims: NonNullable<Organ['pending']>['trims'] = [];
+    if (Array.isArray(od.trims)) {
+      for (const t of od.trims) {
+        if (!t || !Number.isInteger(t.v) || typeof t.p !== 'string') continue;
+        if (veinIds[t.v] > 0) trims.push({ veinId: veinIds[t.v], end: t.e === 'h' ? 'head' : 'tail', port: t.p });
+      }
+    } else {
+      // legacy up/down halves
+      if (Number.isInteger(od.up) && veinIds[od.up!] > 0) trims.push({ veinId: veinIds[od.up!], end: 'tail', port: 'in' });
+      if (Number.isInteger(od.down) && veinIds[od.down!] > 0) trims.push({ veinId: veinIds[od.down!], end: 'head', port: 'out' });
+    }
+    if (trims.length > 0) {
+      o.growth = od.g!;
+      o.pending = { trims };
+    } // veins missing: arrive grown rather than stuck
+  }
+  for (const o of w.organs.values()) if (organGrown(o)) o.chambers = makeChambers(chem, o.kind);
   reindex(w);
   chem.setStickiness(stick);
   if (amb !== null) chem.setAmbient(amb);

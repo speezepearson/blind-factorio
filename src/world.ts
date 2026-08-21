@@ -1,7 +1,7 @@
 import {
   addInto, ambientLeak, cloneParcel, emptyParcel, exchangeHeat, radCount, reactParcel,
   sourceParcel, splitHalf, tempOf, totalParticles,
-  K_ALONG, SCALE,
+  CR, EPS, K_ALONG, SCALE,
 } from './chem';
 import type { Chemistry, Parcel } from './chem';
 import {
@@ -45,11 +45,11 @@ export type Head =
   | { type: 'open' }
   | { type: 'source'; spIdx: number }
   | { type: 'fork'; veinId: number; at: Pt }
-  | { type: 'port'; organId: number; port: 'out' | 'side' };
+  | { type: 'port'; organId: number; port: string }; // key of one of the organ's out ports
 export type Tail =
   | { type: 'open' }
   | { type: 'merge'; veinId: number; at: Pt }
-  | { type: 'organ-in'; organId: number };
+  | { type: 'organ-in'; organId: number; port: string }; // key of one of the organ's in ports
 
 export interface Vein {
   id: number;
@@ -68,31 +68,44 @@ export interface Vein {
   incTick: number[]; // world tick the node incarnated (-1 = never), for smooth extrusion
 }
 
+export type OrganKind = 'filter' | 'exchanger';
+
+// A port is a hole in the membrane bound to one internal chamber: in-ports
+// feed their chamber, out-ports offer theirs to be drunk whole by the
+// attached vein each tick. Keys are stable identities ('in', 'out', 'side',
+// 'fuel', 'hot-in', …) that attachments reference.
+export interface OrganPort {
+  key: string;
+  dir: 'in' | 'out';
+  chamber: string;
+  pt: Pt;
+}
+
 export interface Organ {
   id: number;
+  kind: OrganKind;
   c: Pt; // disc center
   r: number; // disc radius
-  portIn: Pt;
-  portOut: Pt;
-  portSide: Pt;
-  // INERT-PIPES BRANCH: an organ is three chambers wired by permeability
-  // channels; ALL chemistry and heat flow in the world happens inside
-  // them. Null while growing. `inlet` accumulates the feed and drains
-  // through the channels; `out`/`side` are consumed whole by the attached
-  // veins each tick (or vent if a port has no live vein).
-  chambers: { inlet: Parcel; out: Parcel; side: Parcel } | null;
+  ports: OrganPort[];
+  // An organ is chambers wired by permeability channels (the wiring is the
+  // kind's spec — see ORGAN_SPECS); ALL chemistry and heat flow in the
+  // world happens inside them. Null while growing.
+  chambers: Record<string, Parcel> | null;
   // A freshly budded organ grows over GROW_TICKS ticks. While growing it
   // swallows its feed and emits nothing. Budding snips the host vein once,
-  // locally, at the organ's center; the two halves stay intact (hidden
-  // under the opaque growing blob) until completion, when their in-disc
-  // portions are trimmed back to the membrane and the ports attach.
+  // locally, at the organ's center; the connected veins stay intact
+  // (hidden under the opaque growing blob) until completion, when their
+  // in-disc portions are trimmed back to the membrane and the ports attach
+  // (the pending trims record which vein end lands on which port).
   growth: number; // ticks grown; >= GROW_TICKS = fully incarnate
-  pending: { upId: number; downId: number | null } | null; // halves awaiting the completion trim
+  pending: { trims: Array<{ veinId: number; end: 'head' | 'tail'; port: string }> } | null;
   load: number; // smoothed input radicals/tick (drives the heartbeat pulse)
-  // view-only vent trackers: what an unattached port is spraying into the
-  // cavity (smoothed rate + last composition), so the haze can show it
-  ventOut: { rate: number; c: Int32Array } | null;
-  ventSide: { rate: number; c: Int32Array } | null;
+  // consecutive ticks the fuel chamber has sat below ATROPHY_MIN; at
+  // ATROPHY_TICKS the organ dissolves and the pipes rejoin (atrophy)
+  starve: number;
+  // view-only vent trackers by out-port key: what an unattached port is
+  // spraying into the cavity (smoothed rate + last composition), for haze
+  vents: Record<string, { rate: number; c: Int32Array }>;
 }
 
 export const organGrown = (o: Organ) => o.growth >= GROW_TICKS;
@@ -142,18 +155,18 @@ export function reindex(w: World): void {
 export const sourceAt = (w: World, pt: Pt): Source | null =>
   w.sources.find((s) => dist(s.pt, pt) <= SRC_R) ?? null;
 
-// What part of an organ (if any) covers this point — ports win over body.
-// A growing organ's ports aren't drawn yet, so they aren't clickable yet
-// either: only the body blob exists.
-export function organAt(w: World, pt: Pt): { organ: Organ; role: 'body' | 'in' | 'out' | 'side' } | null {
+// What part of an organ (if any) covers this point — ports win over body
+// (port: null = the body). A growing organ's ports aren't drawn yet, so
+// they aren't clickable yet either: only the body blob exists.
+export function organAt(w: World, pt: Pt): { organ: Organ; port: OrganPort | null } | null {
   for (const o of w.organs.values()) {
     if (!organGrown(o)) continue;
-    if (dist(o.portIn, pt) <= PORT_R) return { organ: o, role: 'in' };
-    if (dist(o.portOut, pt) <= PORT_R) return { organ: o, role: 'out' };
-    if (dist(o.portSide, pt) <= PORT_R) return { organ: o, role: 'side' };
+    for (const port of o.ports) {
+      if (dist(port.pt, pt) <= PORT_R) return { organ: o, port };
+    }
   }
   for (const o of w.organs.values()) {
-    if (dist(o.c, pt) <= o.r) return { organ: o, role: 'body' };
+    if (dist(o.c, pt) <= o.r) return { organ: o, port: null };
   }
   return null;
 }
@@ -316,19 +329,21 @@ export function doTick(w: World): void {
     if (p.inc[n - 1]) tailOut.set(p.id, p.parcels[n - 1]);
     let fill: Parcel | null = null;
     if (p.inc[0]) {
-      if (p.head.type === 'source') fill = sourceParcel(chem, p.head.spIdx);
-      else if (p.head.type === 'fork') fill = headIn.get(p.id) ?? null;
+      if (p.head.type === 'source') {
+        // the full-spectrum species is fuel, and its wellhead only trickles
+        const frac = chem.radcount[p.head.spIdx] === chem.radicals.length ? FUEL_SOURCE_FRAC : 1;
+        fill = sourceParcel(chem, p.head.spIdx, frac);
+      } else if (p.head.type === 'fork') fill = headIn.get(p.id) ?? null;
       else if (p.head.type === 'port') {
         const o = w.organs.get(p.head.organId);
         // the vein drinks the whole staging chamber; a fresh parcel is
         // born here and the chamber's ledgers zero (organs create parcels)
-        if (o?.chambers) {
-          const ch = p.head.port === 'side' ? o.chambers.side : o.chambers.out;
-          if (totalParticles(chem, ch.c) > 0 || ch.U > 0) {
-            fill = cloneParcel(ch);
-            ch.c.fill(0);
-            ch.U = 0;
-          }
+        const port = o?.ports.find((q) => q.key === (p.head as { port: string }).port);
+        const ch = port && o?.chambers ? o.chambers[port.chamber] : undefined;
+        if (ch && (totalParticles(chem, ch.c) > 0 || ch.U > 0)) {
+          fill = cloneParcel(ch);
+          ch.c.fill(0);
+          ch.U = 0;
         }
       }
     }
@@ -351,9 +366,10 @@ export function doTick(w: World): void {
     } else if (p.tail.type === 'organ-in') {
       const o = w.organs.get(p.tail.organId);
       // a growing organ swallows its feed (it's building itself with it);
-      // a grown one takes it into the inlet chamber (input parcels die here)
-      if (o?.chambers) {
-        addInto(chem, o.chambers.inlet, out);
+      // a grown one takes it into the port's chamber (input parcels die here)
+      const port = o?.ports.find((q) => q.key === (p.tail as { port: string }).port);
+      if (o?.chambers && port) {
+        addInto(chem, o.chambers[port.chamber], out);
         inFlux.set(o.id, (inFlux.get(o.id) ?? 0) + radCount(chem, out.c));
       }
     }
@@ -446,36 +462,42 @@ function bridgeToPoint(w: World, p: Vein, end: 'head' | 'tail', target: Pt): voi
   }
 }
 
-// The completion trim: when a budded organ finishes growing, the two host
-// halves (snipped at the organ's center at bud time, hidden under the
-// opaque blob since) are cut back to the membrane and the ports attach.
-// Each surviving half is then extended to end exactly ON its port point,
-// so the drawn vein meets the membrane instead of stopping a node short.
+// The completion trim: when a budded organ finishes growing, every vein
+// still connected to it (snipped or retargeted at bud time, hidden under
+// the opaque blob since) is cut back to the membrane and its end attaches
+// to its assigned port. Each survivor is then extended to end exactly ON
+// its port point, so the drawn vein meets the membrane instead of
+// stopping a node short.
 function completeBud(w: World, o: Organ): void {
   if (!o.pending) return;
-  const { upId, downId } = o.pending;
+  const trims = o.pending.trims;
   o.pending = null;
   const inDisc = (pt: Pt) => dist(pt, o.c) <= o.r;
-  const up = w.veins.get(upId);
-  if (up && up.tail.type === 'organ-in' && up.tail.organId === o.id) {
-    let e = up.pts.length - 1;
-    while (e >= 0 && inDisc(up.pts[e])) e--;
-    if (e + 1 >= 2) {
-      trimVein(w, up, 0, e);
-      bridgeToPoint(w, up, 'tail', o.portIn);
-    } else deleteVein(w, up); // fully swallowed
+  for (const tr of trims) {
+    const v = w.veins.get(tr.veinId);
+    const port = o.ports.find((q) => q.key === tr.port);
+    if (!v || !port) continue;
+    if (tr.end === 'tail') {
+      // flows INTO the organ: cut the tail back to the membrane
+      let e = v.pts.length - 1;
+      while (e >= 0 && inDisc(v.pts[e])) e--;
+      if (e + 1 >= 2) {
+        trimVein(w, v, 0, e);
+        v.tail = { type: 'organ-in', organId: o.id, port: tr.port };
+        bridgeToPoint(w, v, 'tail', port.pt);
+      } else deleteVein(w, v); // fully swallowed
+    } else {
+      // flows OUT of the organ: cut the head back to the membrane
+      let s = 0;
+      while (s < v.pts.length && inDisc(v.pts[s])) s++;
+      if (v.pts.length - s >= 2) {
+        trimVein(w, v, s, v.pts.length - 1);
+        v.head = { type: 'port', organId: o.id, port: tr.port };
+        bridgeToPoint(w, v, 'head', port.pt);
+      } else deleteVein(w, v);
+    }
   }
-  const down = downId !== null ? w.veins.get(downId) : undefined;
-  if (down && down.head.type === 'open') {
-    let s = 0;
-    while (s < down.pts.length && inDisc(down.pts[s])) s++;
-    if (down.pts.length - s >= 2) {
-      trimVein(w, down, s, down.pts.length - 1);
-      down.head = { type: 'port', organId: o.id, port: 'out' };
-      bridgeToPoint(w, down, 'head', o.portOut);
-    } else deleteVein(w, down);
-  }
-  o.chambers = makeChambers(w.chem); // the chambers open for business
+  o.chambers = makeChambers(w.chem, o.kind); // the chambers open for business
   reindex(w);
   healAttachments(w);
 }
@@ -486,59 +508,158 @@ function completeBud(w: World, o: Organ): void {
 // deterministic: mean of the binomial, rounded, no sampling). Heat rides
 // each crossing in proportion to the radicals it carries. Since pipes are
 // inert, the chambers are the only places in the world where reactions run
-// and heat moves — "organs contain the catalysts."
+// and heat moves — "organs contain the catalysts." Which chambers hold
+// catalysts is part of the spec (`react`): a heat exchanger's stream
+// chambers move heat but run no chemistry.
 //
+// Fuel: every organ has a `fuel` chamber fed RGB through its fuel port.
+// The RGB smolders there by ordinary chemistry (energy-storing bonds crack
+// where it's warm), its heat conducts to the working chambers, and the
+// cracked singles drain into the process stream. A newly grown organ is
+// endowed with a yolk of fuel; when the chamber runs dry the organ
+// starves, and after ATROPHY_TICKS it dissolves and the pipes rejoin.
+
+interface OrganChannel {
+  from: string;
+  to: string;
+  perm: (chem: Chemistry, s: number) => number;
+}
+interface OrganSpec {
+  label: string[]; // god-mode label lines
+  chambers: string[];
+  react: string[]; // chambers that hold catalysts (reactions run there)
+  channels: OrganChannel[];
+  heat: Array<[string, string, number]>; // conducting chamber pairs
+  ports: Array<{ key: string; dir: 'in' | 'out'; chamber: string }>; // canonical port set
+  yolk: number; // fuel particles a newly grown organ starts with
+}
+
+const isFuel = (chem: Chemistry, s: number) => chem.radcount[s] === chem.radicals.length;
+const FUEL_SOURCE_FRAC = 0.05; // fuel wellheads trickle at this fraction of SCALE
+const FUEL_YOLK = 20000;
+const ATROPHY_MIN = 100; // fuel particles: below this the organ is starving
+const ATROPHY_TICKS = 400; // sustained starvation before dissolution
+// fuel-chamber drains: cracked products join the process stream briskly;
+// unburned fuel only seeps (the reservoir holds it) — slower than a warm
+// chamber burns, so a working organ consumes its fuel rather than wasting
+// it, while an oversupplied reservoir still tops out instead of growing
+// without bound
+const P_FUEL_FEED = 0.15;
+const P_FUEL_SEEP = 0.005;
+const fuelDrain = (chem: Chemistry, s: number) => (isFuel(chem, s) ? P_FUEL_SEEP : P_FUEL_FEED);
+
 // The radical filter: free radicals permeate readily into the side
 // chamber, composites into the out chamber, each with only a trace leak
 // the other way. Fed unreacted singles, its inlet chamber is also where
 // they fuse — so the out stream's compound flux is set by the fusion rate
 // during the inlet's residence time (drain permeabilities tune this; the
 // values below give a pure 1:1 R+G feed about a 50/50 radical split
-// between the two ports).
-type ChamberName = 'inlet' | 'out' | 'side';
-interface OrganChannel {
-  from: ChamberName;
-  to: ChamberName;
-  perm: (chem: Chemistry, s: number) => number;
-}
-// Singles drain to side slowly enough that roughly half of a 1:1 R+G feed
-// fuses during its inlet residence (fusion ≈ 0.08/tick per single at
-// these stocks); compounds drain to out fast so they don't crack back.
+// between the two ports). Singles drain to side slowly enough that
+// roughly half of a 1:1 R+G feed fuses during its inlet residence
+// (fusion ≈ 0.08/tick per single at these stocks); compounds drain to
+// out fast so they don't crack back.
 const P_SIDE_SINGLE = 0.08;
 const P_OUT_COMPOUND = 0.5;
 const P_LEAK = 0.005;
-const FILTER_CHANNELS: OrganChannel[] = [
-  { from: 'inlet', to: 'side', perm: (chem, s) => (chem.radcount[s] === 1 ? P_SIDE_SINGLE : P_LEAK) },
-  { from: 'inlet', to: 'out', perm: (chem, s) => (chem.radcount[s] === 1 ? P_LEAK : P_OUT_COMPOUND) },
-];
 
-export const makeChambers = (chem: Chemistry): NonNullable<Organ['chambers']> => ({
-  inlet: emptyParcel(chem),
-  out: emptyParcel(chem),
-  side: emptyParcel(chem),
-});
+// The heat exchanger: two files of chambers carrying the two streams in
+// opposite directions, heat-conducting pairwise crosswise (counter-current:
+// the hottest incoming pairs with the warmest outgoing). Its stream
+// chambers hold NO catalysts — fluid changes temperature, never species.
+const XCHG_STAGES = 5;
+const P_XCHG_FLOW = 0.5; // along-file drain per tick
+const K_XCHG = 0.45; // cross-file conduction per stage
+
+function exchangerSpec(): OrganSpec {
+  const h = Array.from({ length: XCHG_STAGES }, (_, i) => `h${i}`);
+  const k = Array.from({ length: XCHG_STAGES }, (_, i) => `k${i}`);
+  const flow = (names: string[]): OrganChannel[] =>
+    names.slice(0, -1).map((from, i) => ({ from, to: names[i + 1], perm: () => P_XCHG_FLOW }));
+  return {
+    label: ['HEAT', 'EXCHANGER'],
+    chambers: [...h, ...k, 'fuel'],
+    react: ['fuel'],
+    channels: [...flow(h), ...flow(k), { from: 'fuel', to: 'h0', perm: fuelDrain }],
+    heat: [
+      ...h.map((name, i) => [name, k[XCHG_STAGES - 1 - i], K_XCHG] as [string, string, number]),
+      ['fuel', 'h0', 0.15],
+    ],
+    ports: [
+      { key: 'hot-in', dir: 'in', chamber: 'h0' },
+      { key: 'cold-in', dir: 'in', chamber: 'k0' },
+      { key: 'fuel', dir: 'in', chamber: 'fuel' },
+      { key: 'cold-out', dir: 'out', chamber: `h${XCHG_STAGES - 1}` }, // the cooled hot stream
+      { key: 'hot-out', dir: 'out', chamber: `k${XCHG_STAGES - 1}` }, // the heated cold stream
+    ],
+    yolk: FUEL_YOLK,
+  };
+}
+
+export const ORGAN_SPECS: Record<OrganKind, OrganSpec> = {
+  filter: {
+    label: ['RADICAL', 'FILTER'],
+    chambers: ['inlet', 'out', 'side', 'fuel'],
+    react: ['inlet', 'out', 'side', 'fuel'],
+    channels: [
+      { from: 'inlet', to: 'side', perm: (chem, s) => (chem.radcount[s] === 1 ? P_SIDE_SINGLE : P_LEAK) },
+      { from: 'inlet', to: 'out', perm: (chem, s) => (chem.radcount[s] === 1 ? P_LEAK : P_OUT_COMPOUND) },
+      { from: 'fuel', to: 'inlet', perm: fuelDrain },
+    ],
+    heat: [
+      ['fuel', 'inlet', K_ALONG],
+      ['inlet', 'out', K_ALONG],
+      ['inlet', 'side', K_ALONG],
+      ['out', 'side', K_ALONG],
+    ],
+    ports: [
+      { key: 'in', dir: 'in', chamber: 'inlet' },
+      { key: 'fuel', dir: 'in', chamber: 'fuel' },
+      { key: 'out', dir: 'out', chamber: 'out' },
+      { key: 'side', dir: 'out', chamber: 'side' },
+    ],
+    yolk: FUEL_YOLK,
+  },
+  exchanger: exchangerSpec(),
+};
+
+export function makeChambers(chem: Chemistry, kind: OrganKind): NonNullable<Organ['chambers']> {
+  const spec = ORGAN_SPECS[kind];
+  const chambers: Record<string, Parcel> = {};
+  for (const name of spec.chambers) chambers[name] = emptyParcel(chem);
+  // the yolk: a newly grown organ carries its own fuel endowment (budding
+  // consumes chemicals; this is where some of them went)
+  const fuelIdx = chem.radcount.indexOf(chem.radicals.length);
+  if (spec.yolk > 0 && fuelIdx >= 0 && chambers.fuel) {
+    chambers.fuel.c[fuelIdx] = spec.yolk;
+    chambers.fuel.U = Math.round((CR * spec.yolk * chem.radcount[fuelIdx] * chem.ambient) / EPS);
+  }
+  return chambers;
+}
 
 function organProcess(w: World, o: Organ, inputRad: number): void {
   const chem = w.chem;
   if (!o.chambers) return;
+  const spec = ORGAN_SPECS[o.kind];
   const ch = o.chambers;
-  // out/side still holding fluid were not consumed by a live vein this
+  // out chambers still holding fluid were not consumed by a live vein this
   // tick: the port vents into the cavity — note it for the haze, then drop
-  const note = (slot: Parcel, prev: Organ['ventOut']): Organ['ventOut'] => {
+  for (const port of o.ports) {
+    if (port.dir !== 'out') continue;
+    const slot = ch[port.chamber];
+    const prev = o.vents[port.key];
     if (totalParticles(chem, slot.c) > 0) {
-      const v = { rate: (prev?.rate ?? 0) * 0.9 + radCount(chem, slot.c) * 0.1, c: new Int32Array(slot.c) };
+      o.vents[port.key] = { rate: (prev?.rate ?? 0) * 0.9 + radCount(chem, slot.c) * 0.1, c: new Int32Array(slot.c) };
       slot.c.fill(0);
       slot.U = 0;
-      return v;
+    } else if (prev && prev.rate * 0.9 > 20) {
+      o.vents[port.key] = { rate: prev.rate * 0.9, c: prev.c };
+    } else if (prev) {
+      delete o.vents[port.key];
     }
-    if (prev && prev.rate * 0.9 > 20) return { rate: prev.rate * 0.9, c: prev.c };
-    return null;
-  };
-  o.ventOut = note(ch.out, o.ventOut);
-  o.ventSide = note(ch.side, o.ventSide);
+  }
   o.load = o.load * 0.9 + inputRad * 0.1;
   // channels: deterministic permeability flow, heat riding proportionally
-  for (const c of FILTER_CHANNELS) {
+  for (const c of spec.channels) {
     const from = ch[c.from];
     const to = ch[c.to];
     const fromRad = radCount(chem, from.c);
@@ -557,17 +678,72 @@ function organProcess(w: World, o: Organ, inputRad: number): void {
       to.U += q;
     }
   }
-  // the world's only chemistry and heat flow: chamber reactions, chamber-
-  // to-chamber conduction, and ambient leak through the organ's membrane
-  reactParcel(chem, ch.inlet);
-  reactParcel(chem, ch.out);
-  reactParcel(chem, ch.side);
-  exchangeHeat(chem, ch.inlet, ch.out, K_ALONG);
-  exchangeHeat(chem, ch.inlet, ch.side, K_ALONG);
-  exchangeHeat(chem, ch.out, ch.side, K_ALONG);
-  ambientLeak(chem, ch.inlet);
-  ambientLeak(chem, ch.out);
-  ambientLeak(chem, ch.side);
+  // the world's only chemistry and heat flow: chamber reactions (where the
+  // spec puts catalysts), chamber-to-chamber conduction, and ambient leak
+  // through the organ's membrane
+  for (const name of spec.react) reactParcel(chem, ch[name]);
+  for (const [x, y, k] of spec.heat) exchangeHeat(chem, ch[x], ch[y], k);
+  for (const name of spec.chambers) ambientLeak(chem, ch[name]);
+  // starvation: a dry fuel chamber, held long enough, dissolves the organ
+  const fuelIdx = chem.radcount.indexOf(chem.radicals.length);
+  if (ch.fuel && fuelIdx >= 0) {
+    o.starve = ch.fuel.c[fuelIdx] < ATROPHY_MIN ? o.starve + 1 : 0;
+    if (o.starve >= ATROPHY_TICKS) atrophy(w, o);
+  }
+}
+
+// Atrophy: the organ dissolves and the pipes simply rejoin — every input
+// merges at the old center, every output forks back out of it (the main
+// in/out pair fuse into one vein through the middle; the rest attach as
+// ordinary junctions). The chambers' remaining contents dissolve into the
+// flow at the wound; the reconnecting stubs are ghosts and incarnate from
+// the live ends, so the scar heals over a few ticks.
+function atrophy(w: World, o: Organ): void {
+  const ins: Vein[] = [];
+  const outs: Vein[] = [];
+  for (const v of w.veins.values()) {
+    if (v.tail.type === 'organ-in' && v.tail.organId === o.id) ins.push(v);
+    if (v.head.type === 'port' && v.head.organId === o.id) outs.push(v);
+  }
+  w.organs.delete(o.id);
+  const mainIn =
+    ins.find((v) => v.tail.type === 'organ-in' && (v.tail.port === 'in' || v.tail.port === 'hot-in')) ?? ins[0];
+  const mainOut =
+    outs.find((v) => v.head.type === 'port' && (v.head.port === 'out' || v.head.port === 'hot-out')) ?? outs[0];
+  // whatever the chambers still held rides out with the flow
+  if (o.chambers && mainIn) {
+    const wound = mainIn.parcels[mainIn.parcels.length - 1];
+    for (const p of Object.values(o.chambers)) addInto(w.chem, wound, p);
+  }
+  if (mainIn && mainOut) {
+    const tailPt = mainIn.pts[mainIn.pts.length - 1];
+    const headPt = mainOut.pts[0];
+    const bridge = resample([tailPt, [o.c[0], o.c[1]], headPt], SEG).filter(
+      (q) => dist(q, tailPt) > 4 && dist(q, headPt) > 4,
+    );
+    uniteVeins(w, mainIn, bridge, mainOut);
+    // the junction node the survivors attach to: the united vein's node
+    // nearest the old center
+    const node = mainIn.pts.reduce((best, pt) => (dist(pt, o.c) < dist(best, o.c) ? pt : best));
+    for (const v of ins) {
+      if (v === mainIn) continue;
+      const end = v.pts[v.pts.length - 1];
+      const stub = resample([end, node], SEG).filter((q) => dist(q, end) > 4);
+      extendVeinTail(w, v, stub, { type: 'merge', veinId: mainIn.id, at: [node[0], node[1]] });
+    }
+    for (const v of outs) {
+      if (v === mainOut) continue;
+      const start = v.pts[0];
+      const stub = resample([node, start], SEG).filter((q) => dist(q, start) > 4);
+      extendVeinHead(w, v, stub, { type: 'fork', veinId: mainIn.id, at: [node[0], node[1]] });
+    }
+  } else {
+    // nothing to rejoin: the survivors just open at the membrane
+    for (const v of ins) v.tail = { type: 'open' };
+    for (const v of outs) v.head = { type: 'open' };
+  }
+  reindex(w);
+  healAttachments(w);
 }
 
 // ---------------- editing ops ----------------
@@ -589,12 +765,7 @@ export function commitVein(w: World, pts: Pt[], head: Head, tail: Tail, incarnat
 export function eraseNear(w: World, brush: Pt[]): void {
   const hit = (pt: Pt, r: number) => brush.some((bp) => dist(bp, pt) <= r);
   for (const o of [...w.organs.values()]) {
-    if (
-      hit(o.c, R_ERASE + o.r) ||
-      hit(o.portIn, R_ERASE) ||
-      hit(o.portOut, R_ERASE) ||
-      hit(o.portSide, R_ERASE)
-    ) {
+    if (hit(o.c, R_ERASE + o.r) || o.ports.some((port) => hit(port.pt, R_ERASE))) {
       for (const p of w.veins.values()) {
         if (p.head.type === 'port' && p.head.organId === o.id) p.head = { type: 'open' };
         if (p.tail.type === 'organ-in' && p.tail.organId === o.id) p.tail = { type: 'open' };
@@ -858,21 +1029,26 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
       portOut = rimPick([portIn]);
     }
     const portSide = rimPick([portIn, portOut]);
+    const portFuel = rimPick([portIn, portOut, portSide]);
 
     const instant = opts?.instant ?? false;
     const o: Organ = {
       id: w.nextId++,
+      kind: 'filter',
       c: [center[0], center[1]],
       r: R_ORGAN,
-      portIn,
-      portOut,
-      portSide,
+      ports: [
+        { key: 'in', dir: 'in', chamber: 'inlet', pt: portIn },
+        { key: 'fuel', dir: 'in', chamber: 'fuel', pt: portFuel },
+        { key: 'out', dir: 'out', chamber: 'out', pt: portOut },
+        { key: 'side', dir: 'out', chamber: 'side', pt: portSide },
+      ],
       chambers: null,
       growth: instant ? GROW_TICKS : 0,
       pending: null,
       load: 0,
-      ventOut: null,
-      ventSide: null,
+      starve: 0,
+      vents: {},
     };
     // The bud itself is LOCAL: snip the host once, at the organ's center.
     // Both halves stay intact — their in-disc portions hidden under the
@@ -905,8 +1081,13 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
     p.flow = p.flow.slice(0, m + 1);
     p.inc = p.inc.slice(0, m + 1);
     p.incTick = p.incTick.slice(0, m + 1);
-    p.tail = { type: 'organ-in', organId: o.id };
-    o.pending = { upId: p.id, downId };
+    p.tail = { type: 'organ-in', organId: o.id, port: 'in' };
+    o.pending = {
+      trims: [
+        { veinId: p.id, end: 'tail', port: 'in' },
+        ...(downId !== null ? [{ veinId: downId, end: 'head' as const, port: 'out' }] : []),
+      ],
+    };
     w.organs.set(o.id, o);
     reindex(w);
     if (instant) completeBud(w, o);
@@ -946,18 +1127,11 @@ export function snapshotWorld(w: World): World {
         {
           ...o,
           c: [o.c[0], o.c[1]] as Pt,
-          portIn: [o.portIn[0], o.portIn[1]] as Pt,
-          portOut: [o.portOut[0], o.portOut[1]] as Pt,
-          portSide: [o.portSide[0], o.portSide[1]] as Pt,
-          pending: o.pending ? { ...o.pending } : null,
-          ventOut: null, // view-only trackers regrow after a restore
-          ventSide: null,
+          ports: o.ports.map((p) => ({ ...p, pt: [p.pt[0], p.pt[1]] as Pt })),
+          pending: o.pending ? { trims: o.pending.trims.map((t) => ({ ...t })) } : null,
+          vents: {}, // view-only trackers regrow after a restore
           chambers: o.chambers
-            ? {
-                inlet: cloneParcel(o.chambers.inlet),
-                out: cloneParcel(o.chambers.out),
-                side: cloneParcel(o.chambers.side),
-              }
+            ? Object.fromEntries(Object.entries(o.chambers).map(([k, p]) => [k, cloneParcel(p)]))
             : null,
         } satisfies Organ,
       ]),

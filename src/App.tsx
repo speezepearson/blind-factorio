@@ -234,7 +234,7 @@ export default function App() {
       const pt: Pt = [a[0] + ((b[0] - a[0]) * s) / steps, a[1] + ((b[1] - a[1]) * s) / steps];
       if (sourceAt(w, pt)) return false;
       const oc = organAt(w, pt);
-      if (oc && oc.role === 'body') return false;
+      if (oc && !oc.port) return false;
     }
     return true;
   };
@@ -270,15 +270,16 @@ export default function App() {
     const oc = organAt(w, pt);
     if (src) {
       head = { type: 'source', spIdx: src.spIdx };
-    } else if (oc && (oc.role === 'out' || oc.role === 'side')) {
+    } else if (oc?.port && oc.port.dir === 'out') {
+      const key = oc.port.key;
       const taken = [...w.veins.values()].some(
-        (p) => p.head.type === 'port' && p.head.organId === oc.organ.id && p.head.port === oc.role,
+        (p) => p.head.type === 'port' && p.head.organId === oc.organ.id && p.head.port === key,
       );
       if (taken) {
         flashMsg('port already has a vein');
         return;
       }
-      head = { type: 'port', organId: oc.organ.id, port: oc.role };
+      head = { type: 'port', organId: oc.organ.id, port: key };
     } else if (oc) {
       flashMsg("can't start a vein on an organ body");
       return;
@@ -334,15 +335,15 @@ export default function App() {
     }
     if (dr.endOrganIn !== undefined) return; // already terminated into an organ
     const oc = organAt(w, pt);
-    if (oc && oc.role === 'in') {
-      dr.endOrganIn = oc.organ.id; // the drag ends in the organ's mouth
+    if (oc?.port && oc.port.dir === 'in') {
+      dr.endOrganIn = { organId: oc.organ.id, port: oc.port.key }; // the drag ends in the organ's mouth
       return;
     }
     const last = dr.pts[dr.pts.length - 1];
     if (last && dist(last, pt) < 2.5) return;
     // the pen can't pass through sources or organ bodies — route around
     if (last && !segClear(last, pt)) return;
-    if (!last && (sourceAt(w, pt) || (oc && oc.role === 'body'))) return;
+    if (!last && (sourceAt(w, pt) || (oc && !oc.port))) return;
     dr.pts.push(pt);
   };
 
@@ -389,15 +390,16 @@ export default function App() {
       if (dr.endOrganIn !== undefined) {
         // the stroke terminates exactly on the in port, like a merge does
         // on its junction node — no visible gap at the membrane
-        const o = w.organs.get(dr.endOrganIn);
-        if (o) {
-          pts = resample(smooth([joinPt, ...dr.pts, o.portIn]));
+        const o = w.organs.get(dr.endOrganIn.organId);
+        const tp = o?.ports.find((q) => q.key === dr.endOrganIn!.port);
+        if (tp) {
+          pts = resample(smooth([joinPt, ...dr.pts, tp.pt]));
           while (pts.length && dist(pts[0], joinPt) < 8) pts.shift();
-          while (pts.length && dist(pts[pts.length - 1], o.portIn) < 8) pts.pop();
-          pts.push([o.portIn[0], o.portIn[1]]);
+          while (pts.length && dist(pts[pts.length - 1], tp.pt) < 8) pts.pop();
+          pts.push([tp.pt[0], tp.pt[1]]);
         }
         checkpoint();
-        extendVeinTail(w, extend, pts, { type: 'organ-in', organId: dr.endOrganIn });
+        extendVeinTail(w, extend, pts, { type: 'organ-in', organId: dr.endOrganIn.organId, port: dr.endOrganIn.port });
         return;
       }
       // bridging into another vein's open head fuses all three into one
@@ -445,10 +447,7 @@ export default function App() {
       head.type === 'fork'
         ? head.at
         : head.type === 'port'
-          ? (() => {
-              const o = w.organs.get(head.organId);
-              return o ? (head.port === 'out' ? o.portOut : o.portSide) : null;
-            })()
+          ? (w.organs.get(head.organId)?.ports.find((q) => q.key === head.port)?.pt ?? null)
           : null;
     const seeded = (endPt?: Pt): Pt[] => {
       const raw: Pt[] = headPt ? [headPt, ...dr.pts] : [...dr.pts];
@@ -459,13 +458,14 @@ export default function App() {
     let tail: Tail = { type: 'open' };
     let prependTo: Vein | null = null;
     if (dr.endOrganIn !== undefined) {
-      tail = { type: 'organ-in', organId: dr.endOrganIn };
+      tail = { type: 'organ-in', organId: dr.endOrganIn.organId, port: dr.endOrganIn.port };
       // terminate exactly on the in port, like a merge on its junction node
-      const o = w.organs.get(dr.endOrganIn);
-      if (o) {
-        pts = seeded(o.portIn);
-        while (pts.length && dist(pts[pts.length - 1], o.portIn) < 8) pts.pop();
-        pts.push([o.portIn[0], o.portIn[1]]);
+      const o = w.organs.get(dr.endOrganIn.organId);
+      const tp = o?.ports.find((q) => q.key === dr.endOrganIn!.port);
+      if (tp) {
+        pts = seeded(tp.pt);
+        while (pts.length && dist(pts[pts.length - 1], tp.pt) < 8) pts.pop();
+        pts.push([tp.pt[0], tp.pt[1]]);
       }
     } else {
       const last = pts[pts.length - 1];
