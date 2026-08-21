@@ -4,9 +4,9 @@ import { chromium } from 'playwright';
 // (`node e2e/<name>.mjs`) against a dev server on 5173 (E2E_URL to
 // override). Coordinates are WORLD PIXELS (966×630 canvas, continuous —
 // there is no grid). The dev build exposes `window.__veins` — {world(),
-// chem, tick(), tempOf(parcel), resolveAttach(att)} — which the suites use
-// to fast-forward the sim deterministically and to read hidden state
-// through the real physics formulas.
+// chem, tick(), tempOf(parcel), reactParcel(parcel), resolveAttach(att)} —
+// which the suites use to fast-forward the sim deterministically and to
+// read hidden state through the real physics formulas.
 //
 // Sources sit at (26, 42 + 72·spIdx): R (26,42), G (26,114), B (26,186)…
 

@@ -1,4 +1,4 @@
-// The observation split: players get color/width/flow and field notes;
+// The observation split: players get color/width/flow and nothing else;
 // probes, temperature, and stickiness are god-only.
 import { finish, launch, ok } from './helpers.mjs';
 
@@ -10,7 +10,8 @@ ok('player: no probe tool', (await page.locator('button:has-text("Probe")').coun
 ok('player: no temp overlay button', (await page.locator('button:has-text("Temp")').count()) === 0);
 ok('player: no streams toggle', (await page.locator('button:has-text("Streams")').count()) === 0);
 ok('player: no stickiness sliders', (await page.locator('.stickrow').count()) === 0);
-ok('player: field notes shown', /lossy projection/.test(await page.locator('.panel').innerText()));
+// the side panel is empty in player view: no field notes, no probe cards
+ok('player: panel holds no readouts', !/Probe|lossy projection/.test(await page.locator('.panel').innerText()));
 
 // a point on the demo trunk, read from the world
 const spot = await page.evaluate(() => {
@@ -56,6 +57,6 @@ await page.waitForTimeout(400);
 await page.click('button:has-text("Probe")');
 await page.keyboard.press('g');
 await page.waitForTimeout(200);
-ok('player again: probes hidden', /Field notes/.test(await page.locator('.panel').innerText()));
+ok('player again: probes hidden', !/Probe \d/.test(await page.locator('.panel').innerText()));
 
 await finish(d);

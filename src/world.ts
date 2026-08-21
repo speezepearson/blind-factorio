@@ -430,6 +430,41 @@ function deleteVein(w: World, p: Vein): void {
   w.veins.delete(p.id);
 }
 
+// Snip a vein in two at node m (nudged so no 1-node orphan is stranded):
+// the upstream part keeps the vein's id (anchors on it keep resolving), the
+// downstream part becomes a new open-headed vein inheriting the old tail.
+// Returns the downstream vein's id, or null if there wasn't enough left to
+// make one. The caller re-points the upstream tail and reindexes. Used by
+// both bud paths (manual and junction) — the cut both organs grow over.
+function snipVeinAt(w: World, p: Vein, m: number): number | null {
+  if (p.pts.length - m - 1 === 1) m++; // never strand a 1-node orphan
+  const bPts = p.pts.slice(m + 1);
+  let downId: number | null = null;
+  if (bPts.length >= 2) {
+    const B: Vein = {
+      id: w.nextId++,
+      pts: bPts,
+      parcels: p.parcels.slice(m + 1),
+      hist: p.hist.slice(m + 1),
+      flow: p.flow.slice(m + 1),
+      inc: p.inc.slice(m + 1),
+      incTick: p.incTick.slice(m + 1),
+      head: { type: 'open' },
+      tail: p.tail,
+      probed: p.probed,
+    };
+    w.veins.set(B.id, B);
+    downId = B.id;
+  }
+  p.pts = p.pts.slice(0, m + 1);
+  p.parcels = p.parcels.slice(0, m + 1);
+  p.hist = p.hist.slice(0, m + 1);
+  p.flow = p.flow.slice(0, m + 1);
+  p.inc = p.inc.slice(0, m + 1);
+  p.incTick = p.incTick.slice(0, m + 1);
+  return downId;
+}
+
 // attachments whose anchor no longer resolves to any node go open
 function healAttachments(w: World): void {
   for (const p of w.veins.values()) {
@@ -536,6 +571,10 @@ interface OrganSpec {
   label: string[]; // god-mode label lines
   chambers: string[];
   react: string[]; // chambers that hold catalysts (reactions run there)
+  // NOTE: channel list ORDER is semantic — channels run sequentially, so a
+  // chamber drained before it receives moves fluid at most one hop per
+  // tick, while one drained after can cascade (the exchanger's conveyor
+  // files depend on last-stage-first ordering)
   channels: OrganChannel[];
   heat: Array<[string, string, number]>; // conducting chamber pairs
   leak: string[]; // chambers that leak heat to ambient (the rest are insulated)
@@ -1057,32 +1096,7 @@ function spawnOrganAtJunction(
 
   // ---- eat the junction: snip the host at the center (as tryBud does),
   // retarget the merges to their in-ports, queue everyone's membrane trim
-  let m = centerIdx;
-  if (n - m - 1 === 1) m = centerIdx + 1; // never strand a 1-node orphan
-  const bPts = host.pts.slice(m + 1);
-  let downId: number | null = null;
-  if (bPts.length >= 2) {
-    const B: Vein = {
-      id: w.nextId++,
-      pts: bPts,
-      parcels: host.parcels.slice(m + 1),
-      hist: host.hist.slice(m + 1),
-      flow: host.flow.slice(m + 1),
-      inc: host.inc.slice(m + 1),
-      incTick: host.incTick.slice(m + 1),
-      head: { type: 'open' },
-      tail: host.tail,
-      probed: host.probed,
-    };
-    w.veins.set(B.id, B);
-    downId = B.id;
-  }
-  host.pts = host.pts.slice(0, m + 1);
-  host.parcels = host.parcels.slice(0, m + 1);
-  host.hist = host.hist.slice(0, m + 1);
-  host.flow = host.flow.slice(0, m + 1);
-  host.inc = host.inc.slice(0, m + 1);
-  host.incTick = host.incTick.slice(0, m + 1);
+  const downId = snipVeinAt(w, host, centerIdx);
   host.tail = { type: 'organ-in', organId: o.id, port: inKeys[0] };
   const trims: NonNullable<Organ['pending']>['trims'] = [{ veinId: host.id, end: 'tail', port: inKeys[0] }];
   if (downId !== null) trims.push({ veinId: downId, end: 'head', port: outKeys[0] });
@@ -1408,32 +1422,7 @@ export function tryBud(w: World, at: Pt, opts?: { instant?: boolean }): { ok: bo
     // opaque growing blob — until completeBud() trims them back to the
     // membrane on completion. The upstream half keeps the host's id, so
     // anchors referencing the host keep resolving.
-    let m = idx;
-    if (n - m - 1 === 1) m = idx + 1; // never strand a 1-node orphan
-    const bPts = p.pts.slice(m + 1);
-    let downId: number | null = null;
-    if (bPts.length >= 2) {
-      const B: Vein = {
-        id: w.nextId++,
-        pts: bPts,
-        parcels: p.parcels.slice(m + 1),
-        hist: p.hist.slice(m + 1),
-        flow: p.flow.slice(m + 1),
-        inc: p.inc.slice(m + 1),
-        incTick: p.incTick.slice(m + 1),
-        head: { type: 'open' },
-        tail: p.tail,
-        probed: p.probed,
-      };
-      w.veins.set(B.id, B);
-      downId = B.id;
-    }
-    p.pts = p.pts.slice(0, m + 1);
-    p.parcels = p.parcels.slice(0, m + 1);
-    p.hist = p.hist.slice(0, m + 1);
-    p.flow = p.flow.slice(0, m + 1);
-    p.inc = p.inc.slice(0, m + 1);
-    p.incTick = p.incTick.slice(0, m + 1);
+    const downId = snipVeinAt(w, p, idx);
     p.tail = { type: 'organ-in', organId: o.id, port: 'in' };
     o.pending = {
       trims: [

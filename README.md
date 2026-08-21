@@ -31,8 +31,9 @@
 >   insulated from ambient — measured effectiveness ≈ 0.8, chemistry untouched.
 >
 > Known casualties, accepted: the drawn-parallel-veins heat exchanger and
-> self-limiting in-vein fusion. Physics statements below about in-pipe
-> reactions and heat describe `main`.
+> self-limiting in-vein fusion (both reborn as organ behavior). The body of
+> this README describes THIS branch; `main` still has in-pipe chemistry and
+> heat.
 
 A prototype of a **veins-and-organs game about doing science**. Fluids made of hidden
 *radicals* flow through veins between organs; the underlying chemistry is governed by a
@@ -101,12 +102,13 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
   loads. Since reactions conserve loads, *all chemistry is chromatically invisible* —
   R+G looks exactly as yellow as RG, before, during, and after fusion. Vein **width**
   (∝ √throughput) is the amount channel, orthogonal to color's ratio channel.
-- **Heat moves**: along veins, between co-located veins (crossing veins exchange heat
-  but not matter — counterflow heat exchangers are an *invention*), and leaks to
-  ambient. Heat capacity rides entirely on the fluid; vein walls are **thermally
-  invisible** (zero capacity, no hidden thermal state — an empty vein has no
-  temperature). Fusion is self-limiting: released heat shifts the balance back until
-  the vein sheds it.
+- **Heat moves only inside organs**: between chambers along their spec'd conducting
+  pairs, and (where the spec says so) leaking to ambient through the membrane. In
+  pipes a parcel's heat rides with it, untouched — a vein is a perfect thermos.
+  Heat capacity rides entirely on the fluid; vein walls are **thermally invisible**
+  (zero capacity, no hidden thermal state — an empty vein has no temperature).
+  Fusion is self-limiting *within a chamber*: released heat shifts the balance back
+  until the chamber sheds it.
 
 ## The world
 
@@ -132,10 +134,11 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
   a vein's open tail extends that vein (no fork, no split); one ending on an open
   head prepends to it (feeds it); one bridging an open tail to an open head fuses
   the three into a single vein.
-- **Proximity heat**: any two incarnate nodes within R_CROSS (10 px) that aren't
-  chain neighbors exchange heat — crossings, closely parallel runs, even a vein's
-  own hairpins. Matter never crosses between veins except at junctions. Drawing two
-  veins side by side *is* a heat exchanger.
+- **Pipes are inert**: no reactions, no heat exchange — not with chain neighbors,
+  not with crossing veins, not with ambient. Crossing or paralleling veins is pure
+  routing; matter never crosses between veins except at junctions, and heat never
+  crosses at all. Wanting to exchange heat between streams means growing the organ
+  for it.
 - **Ghost veins & incarnation**: player-drawn veins start as ghosts — dashed
   threads with no walls. They grow real ("incarnate") at 1 node per 2 ticks,
   spreading from every contact with the live network: a head on a source or grown
@@ -207,7 +210,7 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
 | `src/chem.ts` | The chemistry engine: radical table, species/channel derivation, quantized tau-leaped kinetics, integer heat, seeded RNG, and the color projection. Pure logic, generic over the radical set. |
 | `src/world.ts` | The world: veins, organs (specs, chambers, fuel, atrophy), sources, positional attachments, the tick (advection → organs → organogenesis → record), spontaneous junction budding, editing ops (commit/erase/bud), undo snapshots. |
 | `src/render.ts` | Canvas rendering — the flesh-cavity theme lives here: mottled breathing backdrop (with drips), veins with peristalsis and sub-tick fluid slide (the pale membrane wall shows only where the vein reads empty — flowing fluid *is* the vein), smooth ghost-incarnation extrusion, wobbling organ growth, load-driven heartbeat. Owns the player/god visibility split. All ambience is deliberately dimmer and slower than the data channels (vein color/width). |
-| `src/geom.ts` | Continuous-space primitives: smoothing, arc-length resampling, quarter-pixel quantization, the node spatial hash, and every geometric constant (SEG, R_SNAP, R_CROSS, R_ORGAN…). |
+| `src/geom.ts` | Continuous-space primitives: smoothing, arc-length resampling, quarter-pixel quantization, the node spatial hash, and every geometric constant (SEG, R_SNAP, R_ORGAN…). |
 | `src/Probes.tsx` | God-mode probe cards: stacked-area composition + dashed temperature line with a tick-synced hover readout, drawn on canvas straight from the per-node ring buffers. Deliberately allocation-free and chart-library-free: per-update garbage (data arrays, SVG paths) makes V8's committed heap grow without bound in Chromium until the tab OOMs ("Aw, Snap") — recharts at the 250 ms refresh leaked ~45 MB/s. |
 | `src/serialize.ts` | World structure ↔ URL-safe deflated code (`rv` format 2: quarter-pixel integer points, lossless round-trip; rv 1 grid codes migrate, loading fully incarnate); fluid/heat state intentionally not serialized — imports refill from sources. |
 | `src/presets.ts` | Built-in worlds (fuse & filter demo, fresh slate). |

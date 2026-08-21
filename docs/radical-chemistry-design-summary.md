@@ -2,6 +2,19 @@
 > snapshotted from on 2026-08-17 has been retired). The reference prototypes
 > `radical-kinetics-sandbox.jsx` and `radical-veins-game.jsx` still live in `~/` on
 > the dev VM.
+>
+> **Branch `inert-pipes` deltas (2026-08-21):** this doc records the design as
+> conceived; the shipped branch has since diverged on four points, deliberately
+> (see the README banner for the full story). (1) "There is no separate fuel
+> system" is no longer true: RGB is a fuel/morphogen with a weak wellhead —
+> organs form at junctions in response to it, run on it, and atrophy without it.
+> (2) ΔE is no longer ≥ 0 by construction: stickiness may be negative (shipped
+> a_B = −4.0), making B's bonds energy-*storing*, with kinetic protection
+> (barrier ∝ stored energy moved) keeping fuels metastable. (3) Heat no longer
+> conducts along or between veins — pipes are inert; ALL chemistry and heat
+> flow lives in organ chambers, so the counterflow heat exchanger is an organ,
+> not a drawing technique. (4) Budding is chemistry-triggered at junctions, the
+> first real step toward §"mixture-determined budding" below.
 
 # Radical Chemistry — Physics Design Summary
 

@@ -13,7 +13,6 @@ export const WORLD_H = 630;
 
 export const SEG = 16; // arc length between vein nodes, px (1 node = 1 parcel)
 export const R_SNAP = 14; // attach/probe/bud click radius (> SEG/2, so a click on a vein always finds a node)
-export const R_CROSS = 10; // crossing veins exchange heat within this node distance
 export const R_ORGAN = 52; // organ disc radius
 export const PORT_R = 10; // port hit/draw zone radius
 export const R_ERASE = 14; // eraser brush radius

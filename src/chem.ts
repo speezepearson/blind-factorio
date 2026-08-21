@@ -18,8 +18,7 @@ export const SCALE = 10000; // particles per "part" (source output per tick)
 // empty stretch of vein has no temperature at all (it reads as ambient).
 export const CR = 0.8; // heat capacity per radical
 export const T_AMB = 1.0; // default ambient temperature
-export const K_ALONG = 0.25; // heat conduction along a vein, per tick
-export const K_CROSS = 0.15; // heat conduction between co-located veins
+export const K_ALONG = 0.25; // heat conduction between organ chambers, per tick
 export const K_AMB = 0.03; // leak to ambient, per tick
 
 const CHEM_A = 25; // pass-attempt rate
