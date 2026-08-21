@@ -799,8 +799,13 @@ function atrophy(w: World, o: Organ): void {
 //   exchanger  hot-out = first output counter-clockwise from the hot
 //              input, cold-out = the other way.
 
-const SPAWN_PERIOD = 5; // ticks between junction scans
-const SPAWN_DWELL = 60; // ticks a trigger must hold before budding
+// Organogenesis is nearly immediate — the game runs well below 60 Hz, and a
+// long dwell would blur the cause-and-effect between "add RGB" and "an organ
+// grows". Since every trigger requires fuel, the player's control is exactly
+// that: only route RGB to a junction when you're ready for it to become an
+// organ. The 3-tick hold just rides out single-parcel flickers.
+const SPAWN_PERIOD = 1; // ticks between junction scans
+const SPAWN_DWELL = 3; // ticks a trigger must hold before budding
 const SENSE_NODES = 8; // trailing parcels sampled per input stream
 const R_CLUSTER = 40; // attachments this close along a host share one junction
 
