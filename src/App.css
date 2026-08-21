@@ -158,23 +158,3 @@ canvas {
   width: 380px;
   flex: 0 0 auto;
 }
-
-.panel .help {
-  background: #262023;
-  border: 1px solid #443a3c;
-  border-radius: 6px;
-  padding: 12px 14px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: #c4b8b2;
-}
-
-.panel .help h2 {
-  margin: 0 0 8px;
-  font-size: 15px;
-  color: #e8ddd2;
-}
-
-.panel .help p {
-  margin: 0 0 10px;
-}

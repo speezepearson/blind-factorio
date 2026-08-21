@@ -765,23 +765,7 @@ export default function App() {
               onRemove={(id) => setProbes((ps) => ps.filter((p) => p.id !== id))}
               onClear={() => setProbes([])}
             />
-          ) : (
-            <div className="help">
-              <h2>Field notes</h2>
-              <p>
-                Something flows in these veins. Its <b>color</b> shows the mixture's ratios — but color is a lossy
-                projection, and different mixtures can look identical. Vein <b>width</b> shows how much is flowing.
-              </p>
-              <p>
-                Fluids react when they meet. Reactions never change a stream's color — only experiments reveal
-                what's bound to what.
-              </p>
-              <p>
-                Budding an organ on a vein (double-click) grows something that transforms the flow. What, exactly?
-                That's yours to find out.
-              </p>
-            </div>
-          )}
+          ) : null}
         </div>
       </div>
     </div>
