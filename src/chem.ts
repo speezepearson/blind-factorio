@@ -37,16 +37,38 @@ export interface RadicalDef {
 
 // The committed content, visible primaries first. K/X are designed (black,
 // invisible) but not yet shipped — append them here when they graduate.
+//
+// B's stickiness is NEGATIVE: every bond it makes stores energy instead of
+// releasing it. B is the energetic radical — forming RB/GB/RGB is uphill,
+// cracking them releases the stored energy as heat. RGB in particular
+// (bond energy 2·(a_R+a_G+a_B) < 0) is a genuine fuel: atomizing one
+// releases net heat, and kinetic protection (see KIN_PROTECT) keeps it
+// metastable at ambient so it survives transit and burns where it's warm.
 export const DEFAULT_RADICALS: RadicalDef[] = [
   { id: 'R', stick: 1.75, pigment: [1, 0, 0] },
   { id: 'G', stick: 1.25, pigment: [0, 1, 0] },
-  { id: 'B', stick: 0.75, pigment: [0, 0, 1] },
+  { id: 'B', stick: -4.0, pigment: [0, 0, 1] },
 ];
+
+// Energy-storing bonds are kinetically protected: a channel's pass sits
+// KIN_PROTECT·(the stored energy of every negative bond it makes or
+// breaks) above the ordinary CHEM_EA barrier, in BOTH directions —
+// equilibrium is untouched, only the kinetics slow. The protection rides
+// the BONDS, not the channel's net ΔE: without that, a fuel could fall
+// apart through a stepwise back door (RGB → R+GB is net-uphill only 0.75
+// because GB itself stores energy — yet it moves a stored-energy bond and
+// must be slow). This is what makes fuel fuel: cracking RGB at ambient is
+// a slow smolder, at 2× ambient a brisk burn, hotter still a runaway —
+// and forming it needs a deliberately hot furnace.
+const KIN_PROTECT = 2.2;
 
 export interface Channel {
   loose: [number, number]; // species indices of the {A, B} side
   tight: number[]; // [A∪B] if disjoint, else [A∪B, A∩B]
-  dEq: number; // binding advantage of the tight side, in heat quanta (≥ 0)
+  // binding advantage of the tight side, in heat quanta — SIGNED: negative
+  // means the tight (union) side stores energy and cracking it releases
+  dEq: number;
+  act: number; // extra symmetric barrier (quanta) for energy-storing channels
 }
 
 export interface Chemistry {
@@ -86,17 +108,10 @@ export function buildChemistry(radicals: RadicalDef[]): Chemistry {
   const maskToIdx = new Map(masks.map((m, i) => [m, i]));
   const stick: Record<string, number> = Object.fromEntries(radicals.map((r) => [r.id, r.stick]));
 
-  const bondE = (mask: number) => {
-    let e = 0;
-    const rs = radicals.filter((r) => mask & bit[r.id]);
-    for (let i = 0; i < rs.length; i++) {
-      for (let j = i + 1; j < rs.length; j++) e += stick[rs[i].id] + stick[rs[j].id];
-    }
-    return e;
-  };
-
-  // channels: {A,B} ⇌ {A∪B, A∩B}, subset pairs inert (skipped); the
-  // union–intersection side is the tighter one by construction
+  // channels: {A,B} ⇌ {A∪B, A∩B}, subset pairs inert (skipped). The bonds
+  // a channel makes going loose→tight are exactly the cross-pairs between
+  // A\B and B\A, so its ΔE is their energy sum — and its kinetic
+  // protection is KIN_PROTECT × the stored energy among them.
   const buildChannels = (): Channel[] => {
     const out: Channel[] = [];
     for (let a = 0; a < masks.length; a++) {
@@ -106,11 +121,22 @@ export function buildChemistry(radicals: RadicalDef[]): Chemistry {
         const U = A | B;
         const I = A & B;
         if (U === A || U === B) continue;
-        const dE = bondE(U) + bondE(I) - bondE(A) - bondE(B);
+        let dE = 0;
+        let stored = 0;
+        for (const ri of radicals) {
+          if (!(A & bit[ri.id] && !(B & bit[ri.id]))) continue;
+          for (const rj of radicals) {
+            if (!(B & bit[rj.id] && !(A & bit[rj.id]))) continue;
+            const e = stick[ri.id] + stick[rj.id];
+            dE += e;
+            if (e < 0) stored -= e;
+          }
+        }
         out.push({
           loose: [a, b],
           tight: I ? [maskToIdx.get(U)!, maskToIdx.get(I)!] : [maskToIdx.get(U)!],
-          dEq: Math.max(0, Math.round(dE / EPS)),
+          dEq: Math.round(dE / EPS),
+          act: Math.round((KIN_PROTECT * stored) / EPS),
         });
       }
     }
@@ -270,8 +296,15 @@ export function reactParcel(chem: Chemistry, parcel: Parcel): void {
     let any = false;
     for (let j = 0; j < channels.length; j++) {
       const ch = channels[j];
-      const a = (CHEM_A * PRE_S[2] * eEa * c[ch.loose[0]] * c[ch.loose[1]]) / Nr;
-      let b = CHEM_A * PRE_S[ch.tight.length] * eEa * Math.exp(-ch.dEq * EPS * invT);
+      // one pass per channel, sitting CHEM_EA + act above the HIGHER side:
+      // whichever direction climbs (dEq > 0: tight→loose; dEq < 0: the
+      // energy-storing loose→tight) pays the Boltzmann factor for |dEq|;
+      // act slows both directions equally, so equilibrium is unchanged
+      const eAct = ch.act > 0 ? Math.exp(-ch.act * EPS * invT) : 1;
+      const aClimb = ch.dEq < 0 ? Math.exp(ch.dEq * EPS * invT) : 1;
+      const bClimb = ch.dEq > 0 ? Math.exp(-ch.dEq * EPS * invT) : 1;
+      const a = (CHEM_A * PRE_S[2] * eEa * eAct * aClimb * c[ch.loose[0]] * c[ch.loose[1]]) / Nr;
+      let b = CHEM_A * PRE_S[ch.tight.length] * eEa * eAct * bClimb;
       for (const i of ch.tight) b *= c[i];
       if (ch.tight.length === 2) b /= Nr;
       rL[j] = a;
@@ -303,6 +336,9 @@ export function reactParcel(chem: Chemistry, parcel: Parcel): void {
       let kIn = poisson(rL[j] * tau);
       if (kIn > 0) {
         kIn = Math.min(kIn, c[ch.loose[0]], c[ch.loose[1]]);
+        // the climb floor works both ways: forming an energy-storing bond
+        // must pay ΔE from the ledger, just like unbinding a normal one
+        if (ch.dEq < 0) kIn = Math.min(kIn, Math.floor(parcel.U / -ch.dEq));
         c[ch.loose[0]] -= kIn;
         c[ch.loose[1]] -= kIn;
         for (const i of ch.tight) c[i] += kIn;

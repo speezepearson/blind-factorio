@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_RADICALS, buildChemistry, tempOf } from './chem';
+import { DEFAULT_RADICALS, buildChemistry, reactParcel, tempOf } from './chem';
 import type { Parcel } from './chem';
 import {
   doTick, ensureHist, eraseNear, eraseSpan, extendVeinHead, extendVeinTail, organAt, snapshotWorld,
@@ -600,6 +600,7 @@ export default function App() {
         chem,
         tick: () => doTick(worldRef.current),
         tempOf: (p: Parcel) => tempOf(chem, p),
+        reactParcel: (p: Parcel) => reactParcel(chem, p),
         resolveAttach: (att: { veinId: number; at: Pt }) => resolveAttach(worldRef.current, att),
       };
     }
@@ -693,7 +694,7 @@ export default function App() {
               a({r.id})
               <input
                 type="range"
-                min={0}
+                min={-6}
                 max={4}
                 step={0.05}
                 value={stick[r.id]}
