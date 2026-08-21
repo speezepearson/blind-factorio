@@ -1,16 +1,37 @@
 # Veins
 
-> **Branch `inert-pipes`** — an aggressive simplification: parcels in pipes are
-> completely inert (no reactions, no heat exchange with neighbors, crossings, or
-> ambient — a pipe is a perfect sample vial; junctions still mix, forks still
-> split). ALL chemistry and heat flow happens inside organs, now defined purely
-> as chambers + permeability channels ("organs contain the catalysts"): the
-> filter is inlet/out/side with [fast singles → side], [fast compounds → out],
-> and trace leaks, tuned so a pure 1:1 R+G feed splits its radicals ~50/50
-> between the ports (fusion happens in the inlet during residence). Chamber
-> transfers are deterministic (mean, rounded — no sampling); reaction noise
-> remains. Known casualties, accepted: the drawn-parallel-veins heat exchanger
-> and self-limiting in-vein fusion. Physics statements below about in-pipe
+> **Branch `inert-pipes`** — an aggressive simplification, now grown into a
+> metabolism. Parcels in pipes are completely inert (no reactions, no heat
+> exchange with neighbors, crossings, or ambient — a pipe is a perfect sample
+> vial; junctions still mix, forks still split). ALL chemistry and heat flow
+> happens inside organs, defined purely as DATA: named chambers, permeability
+> channels (deterministic — mean, rounded, no sampling), heat-conducting
+> chamber pairs, which chambers hold catalysts, which leak to ambient, and a
+> keyed port set. On top of that:
+>
+> - **B is the energetic radical** (stickiness −4.0): every bond it makes
+>   *stores* energy. RGB is fuel — atomizing it releases net heat — and
+>   kinetic protection (barriers scale with the stored energy a channel
+>   moves) keeps it metastable: a smolder at ambient, a brisk burn at 2×, a
+>   runaway when hot. Inert pipes make fuel logistics safe by construction.
+> - **Organs run on fuel.** Every organ has a fuel chamber fed RGB through a
+>   violet port; it smolders there by ordinary chemistry, its heat drives the
+>   working chambers, and the cracked R+G+B join the process stream. Newborns
+>   carry a yolk; a dry reservoir starves the organ and after ATROPHY_TICKS it
+>   dissolves — the pipes simply *rejoin* (merge then split at the old center).
+> - **Organs form spontaneously** — no user input. Junction sites (attachment
+>   clusters on a host vein) are scanned continuously; when a site's input
+>   streams hold a trigger for SPAWN_DWELL ticks, the organ buds there. A
+>   **filter** takes a 2-in-2-out junction where one input is >40% R, >30% G,
+>   <1% RGB and the other >1% RGB (main out = first output clockwise from the
+>   fuel input). A **heat exchanger** takes 3-in-2-out where exactly one input
+>   carries >1% RGB and the other two differ by >0.3 temperature units
+>   (hot-out = first output counter-clockwise from the hot input); inside it's
+>   two 7-stage counter-current conveyor files, heat-only cross pairs,
+>   insulated from ambient — measured effectiveness ≈ 0.8, chemistry untouched.
+>
+> Known casualties, accepted: the drawn-parallel-veins heat exchanger and
+> self-limiting in-vein fusion. Physics statements below about in-pipe
 > reactions and heat describe `main`.
 
 A prototype of a **veins-and-organs game about doing science**. Fluids made of hidden
@@ -63,9 +84,13 @@ npm run e2e     # Playwright suites in e2e/ (dev server must be up)
   subset of the radicals. The one reaction law: **A + B ⇌ A∪B + A∩B** — disjoint
   species fuse, subset pairs are inert, partial overlaps exchange. Radical counts are
   conserved by every reaction.
-- **Bond energies** come from one per-radical *stickiness*: E_ij = a_i + a_j. Each
-  reaction channel's tighter side (union + intersection) is deeper by the boundary
-  bonds ΔE; crossings into it release ΔE as heat, crossings out must pay it.
+- **Bond energies** come from one per-radical *stickiness*: E_ij = a_i + a_j.
+  Stickiness may be **negative** (shipped: a_B = −4.0): such bonds *store* energy —
+  forming them is uphill, cracking them pays out. Channels carry a signed ΔE; the
+  single pass sits above whichever side is higher, and the climbing direction pays
+  from the heat ledger. Channels that move stored-energy bonds get **kinetic
+  protection** (an extra symmetric barrier ∝ the stored energy moved, equilibrium
+  untouched) — that is what makes RGB a *fuel* rather than a firecracker.
 - **Everything conserved is an exact integer.** A parcel is integer particle counts per
   species plus a heat ledger U in quanta of 0.01 energy. Temperature is a readout
   (U·ε / heat capacity), not a state variable. Kinetics is tau-leaped Poisson crossings;
@@ -144,11 +169,15 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
   emitting nothing (downstream drains). Only on completion are the halves trimmed
   back to the membrane and the ports attached, each surviving half extended to end
   exactly on its port. Ports are unlabeled pigment splotches riding the pulsing
-  membrane — color is their only distinction (green in, blue out, rust side). One
-  organ exists so far — the **radical filter** (free radicals out the side port,
-  composites out the main port); its name is god-only on the canvas. Budding is
-  hard-coded; the mixture-determined differentiation grammar is the next design
-  milestone.
+  membrane — color is their only distinction (green in, blue out, rust side,
+  violet fuel; the exchanger's stream ports warm/cool with their duty). Organ
+  names are god-only on the canvas. Double-click budding still exists as the
+  designer's shortcut (it always grows a filter), but the real mechanism is
+  **spontaneous organogenesis at junctions** (see the branch banner): chemistry
+  decides where organs grow, fuel supply decides whether they persist, and
+  atrophy rejoins the pipes when it doesn't. The junction bud validates like a
+  manual bud (room, incarnation, no third-party junctions on anything the disc
+  would eat) and retries until the site is legal.
 - Erasing is a brush: nodes within R_ERASE of the stroke vanish, splitting veins
   into fragments (fluid rides along); organs the brush touches die (an interrupted
   organ's snipped host halves survive, re-exposed). **Shift-click** severs the whole
@@ -176,7 +205,7 @@ serialize and replay exactly). `src/geom.ts` owns the constants and primitives.
 | File | Job |
 |---|---|
 | `src/chem.ts` | The chemistry engine: radical table, species/channel derivation, quantized tau-leaped kinetics, integer heat, seeded RNG, and the color projection. Pure logic, generic over the radical set. |
-| `src/world.ts` | The world: veins, organs, sources, positional attachments, the tick (heat → reactions → advection → record), editing ops (commit/erase/bud), undo snapshots. |
+| `src/world.ts` | The world: veins, organs (specs, chambers, fuel, atrophy), sources, positional attachments, the tick (advection → organs → organogenesis → record), spontaneous junction budding, editing ops (commit/erase/bud), undo snapshots. |
 | `src/render.ts` | Canvas rendering — the flesh-cavity theme lives here: mottled breathing backdrop (with drips), veins with peristalsis and sub-tick fluid slide (the pale membrane wall shows only where the vein reads empty — flowing fluid *is* the vein), smooth ghost-incarnation extrusion, wobbling organ growth, load-driven heartbeat. Owns the player/god visibility split. All ambience is deliberately dimmer and slower than the data channels (vein color/width). |
 | `src/geom.ts` | Continuous-space primitives: smoothing, arc-length resampling, quarter-pixel quantization, the node spatial hash, and every geometric constant (SEG, R_SNAP, R_CROSS, R_ORGAN…). |
 | `src/Probes.tsx` | God-mode probe cards: stacked-area composition + dashed temperature line with a tick-synced hover readout, drawn on canvas straight from the per-node ring buffers. Deliberately allocation-free and chart-library-free: per-update garbage (data arrays, SVG paths) makes V8's committed heap grow without bound in Chromium until the tab OOMs ("Aw, Snap") — recharts at the 250 ms refresh leaked ~45 MB/s. |
@@ -193,7 +222,7 @@ React for the charts. State the loop needs is shadowed in refs. Undo/redo snapsh
 world per gesture via `snapshotWorld` (probe history excluded — it regrows; stickiness
 is chemistry, not world, and is not undoable).
 
-In dev builds `window.__veins` exposes `{world(), chem, tick(), tempOf(parcel), resolveAttach(att)}` — the
+In dev builds `window.__veins` exposes `{world(), chem, tick(), tempOf(parcel), reactParcel(parcel), resolveAttach(att)}` — the
 e2e suites use it to fast-forward the sim deterministically and to assert on hidden
 state through the real physics formulas.
 

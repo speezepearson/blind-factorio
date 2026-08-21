@@ -125,6 +125,9 @@ export interface World {
   sources: Source[];
   nodeHash: NodeHash<Vein>; // rebuilt by reindex(); geometry is frozen between edits
   histCount: number;
+  // organogenesis dwell clocks: junction-site key -> ticks its trigger
+  // conditions have held (transient; not serialized)
+  spawnDwell: Map<string, number>;
 }
 
 export function makeWorld(chem: Chemistry): World {
@@ -142,6 +145,7 @@ export function makeWorld(chem: Chemistry): World {
     sources,
     nodeHash: new NodeHash<Vein>(),
     histCount: 0,
+    spawnDwell: new Map(),
   };
 }
 
@@ -387,6 +391,10 @@ export function doTick(w: World): void {
     organProcess(w, o, inFlux.get(o.id) ?? 0);
   }
 
+  // 3.5) ORGANOGENESIS — junctions whose streams hold a trigger long
+  // enough bud their organ spontaneously
+  if (w.tick % SPAWN_PERIOD === 0) spawnStep(w);
+
   // 4) RECORD
   w.tick++;
   const slot = w.tick % HIST;
@@ -530,6 +538,7 @@ interface OrganSpec {
   react: string[]; // chambers that hold catalysts (reactions run there)
   channels: OrganChannel[];
   heat: Array<[string, string, number]>; // conducting chamber pairs
+  leak: string[]; // chambers that leak heat to ambient (the rest are insulated)
   ports: Array<{ key: string; dir: 'in' | 'out'; chamber: string }>; // canonical port set
   yolk: number; // fuel particles a newly grown organ starts with
 }
@@ -566,24 +575,44 @@ const P_LEAK = 0.005;
 // opposite directions, heat-conducting pairwise crosswise (counter-current:
 // the hottest incoming pairs with the warmest outgoing). Its stream
 // chambers hold NO catalysts — fluid changes temperature, never species.
-const XCHG_STAGES = 5;
-const P_XCHG_FLOW = 0.5; // along-file drain per tick
-const K_XCHG = 0.45; // cross-file conduction per stage
+// 7 stages per file, but the terminal ones are vestibules, not exchangers:
+// the entry chamber forwards its fluid the same tick it fills, and the
+// exit chamber is drunk empty by the port vein during advection — both
+// stand empty when the heat pairs run. 7 stages = 5 live counter-current
+// pairs (and 15 chambers with the fuel reservoir: "around a dozen").
+const XCHG_STAGES = 7;
+// full turnover, one stage per tick: with the channels ordered LAST STAGE
+// FIRST (channels run in spec order, so draining a chamber before it
+// receives keeps fluid from cascading several stages in one tick), each
+// file is a strict conveyor — every parcel of stream spends exactly one
+// tick in each stage
+const P_XCHG_FLOW = 1.0;
+// and each cross pair EQUALIZES every tick (κ=1 is exact in exchangeHeat,
+// not an overshoot): conveyor staging + per-stage equilibration is the
+// ideal staged counter-current exchanger, effectiveness N/(N+1)
+const K_XCHG = 1.0;
 
 function exchangerSpec(): OrganSpec {
   const h = Array.from({ length: XCHG_STAGES }, (_, i) => `h${i}`);
   const k = Array.from({ length: XCHG_STAGES }, (_, i) => `k${i}`);
   const flow = (names: string[]): OrganChannel[] =>
-    names.slice(0, -1).map((from, i) => ({ from, to: names[i + 1], perm: () => P_XCHG_FLOW }));
+    names
+      .slice(0, -1)
+      .map((from, i) => ({ from, to: names[i + 1], perm: () => P_XCHG_FLOW }))
+      .reverse();
   return {
     label: ['HEAT', 'EXCHANGER'],
     chambers: [...h, ...k, 'fuel'],
     react: ['fuel'],
     channels: [...flow(h), ...flow(k), { from: 'fuel', to: 'h0', perm: fuelDrain }],
-    heat: [
-      ...h.map((name, i) => [name, k[XCHG_STAGES - 1 - i], K_XCHG] as [string, string, number]),
-      ['fuel', 'h0', 0.15],
-    ],
+    // cross pairs ONLY: the fuel reservoir must not touch the stream files
+    // thermally — a big cold fuel stock would otherwise refrigerate h0 and
+    // eat the very gradient the organ exists to preserve (its exhaust
+    // matter still drains into the h file, heat riding along)
+    heat: h.map((name, i) => [name, k[XCHG_STAGES - 1 - i], K_XCHG] as [string, string, number]),
+    // the stream files are insulated — an exchanger's whole job is keeping
+    // the gradient between its two flows, not sharing it with the cavity
+    leak: ['fuel'],
     ports: [
       { key: 'hot-in', dir: 'in', chamber: 'h0' },
       { key: 'cold-in', dir: 'in', chamber: 'k0' },
@@ -611,6 +640,7 @@ export const ORGAN_SPECS: Record<OrganKind, OrganSpec> = {
       ['inlet', 'side', K_ALONG],
       ['out', 'side', K_ALONG],
     ],
+    leak: ['inlet', 'out', 'side', 'fuel'],
     ports: [
       { key: 'in', dir: 'in', chamber: 'inlet' },
       { key: 'fuel', dir: 'in', chamber: 'fuel' },
@@ -683,7 +713,7 @@ function organProcess(w: World, o: Organ, inputRad: number): void {
   // through the organ's membrane
   for (const name of spec.react) reactParcel(chem, ch[name]);
   for (const [x, y, k] of spec.heat) exchangeHeat(chem, ch[x], ch[y], k);
-  for (const name of spec.chambers) ambientLeak(chem, ch[name]);
+  for (const name of spec.leak) ambientLeak(chem, ch[name]);
   // starvation: a dry fuel chamber, held long enough, dissolves the organ
   const fuelIdx = chem.radcount.indexOf(chem.radicals.length);
   if (ch.fuel && fuelIdx >= 0) {
@@ -744,6 +774,321 @@ function atrophy(w: World, o: Organ): void {
   }
   reindex(w);
   healAttachments(w);
+}
+
+// ---- spontaneous organogenesis --------------------------------------------
+// Organs are not placed; they GROW where the chemistry says so. Every
+// SPAWN_PERIOD ticks the network's junctions are read. A junction is a
+// cluster of attachments (merges in, forks out) on a host vein, close
+// enough together that one organ disc could swallow them, counted along
+// with the host's own through-flow. When a junction's input streams have
+// held an organ kind's trigger for SPAWN_DWELL ticks, the organ buds
+// there: the disc eats the junction, every vein end lands on a port
+// chosen by its role, and growth proceeds exactly like a manual bud.
+//
+// Triggers (fractions are of particles, sensed over the trailing
+// SENSE_NODES occupied parcels approaching the junction):
+//   filter     2-in 2-out: one input >40% R, >30% G, <1% RGB (the mix);
+//              the other input >1% RGB (the fuel).
+//   exchanger  3-in 2-out: exactly one input >1% RGB (the fuel); of the
+//              other two, one runs >0.3 temperature units hotter.
+// Output roles are geometric, walking the rim from the named input
+// (screen y points down, so "clockwise" visually = increasing atan2):
+//   filter     main out = first output clockwise from the fuel input,
+//              side = the other way.
+//   exchanger  hot-out = first output counter-clockwise from the hot
+//              input, cold-out = the other way.
+
+const SPAWN_PERIOD = 5; // ticks between junction scans
+const SPAWN_DWELL = 60; // ticks a trigger must hold before budding
+const SENSE_NODES = 8; // trailing parcels sampled per input stream
+const R_CLUSTER = 40; // attachments this close along a host share one junction
+
+interface JunctionArm {
+  vein: Vein;
+  kind: 'merge' | 'fork';
+  idx: number; // host node the attachment resolves to
+}
+interface Sense {
+  frac: Float64Array; // particle fraction per species
+  total: number;
+  temp: number;
+}
+
+function senseStream(chem: Chemistry, v: Vein, start: number, step: -1 | 1): Sense | null {
+  const frac = new Float64Array(chem.nsp);
+  let total = 0;
+  let U = 0;
+  let rads = 0;
+  for (let i = start, taken = 0; i >= 0 && i < v.pts.length && taken < SENSE_NODES; i += step, taken++) {
+    if (!v.inc[i]) break;
+    const pc = v.parcels[i];
+    if (totalParticles(chem, pc.c) === 0) continue;
+    for (let s = 0; s < chem.nsp; s++) {
+      frac[s] += pc.c[s];
+      total += pc.c[s];
+    }
+    U += pc.U;
+    rads += radCount(chem, pc.c);
+  }
+  if (total < SCALE * 0.2) return null; // not a sustained stream
+  for (let s = 0; s < chem.nsp; s++) frac[s] /= total;
+  return { frac, total, temp: rads > 0 ? (U * EPS) / (CR * rads) : chem.ambient };
+}
+
+type SpawnRoles = { fuel: number; mix?: number; hot?: number; cold?: number }; // indices into inputs
+
+function spawnStep(w: World): void {
+  const chem = w.chem;
+  const fuelIdx = chem.radcount.indexOf(chem.radicals.length);
+  const rIdx = chem.speciesIndex('R');
+  const gIdx = chem.speciesIndex('G');
+  if (fuelIdx < 0) return;
+  // every attachment, grouped by the host vein it resolves onto
+  const perHost = new Map<number, JunctionArm[]>();
+  for (const q of w.veins.values()) {
+    const add = (kind: 'merge' | 'fork', att: { veinId: number; at: Pt }, end: 'head' | 'tail') => {
+      const seg = resolveAttach(w, att, { selfId: q.id, end });
+      if (!seg) return;
+      const list = perHost.get(seg.vein.id) ?? [];
+      list.push({ vein: q, kind, idx: seg.idx });
+      perHost.set(seg.vein.id, list);
+    };
+    if (q.head.type === 'fork') add('fork', q.head, 'head');
+    if (q.tail.type === 'merge') add('merge', q.tail, 'tail');
+  }
+  const holding = new Set<string>();
+  let spawned = false;
+  for (const [hostId, arms] of perHost) {
+    if (spawned) break;
+    const host = w.veins.get(hostId);
+    if (!host) continue;
+    arms.sort((x, y) => x.idx - y.idx);
+    const clusters: JunctionArm[][] = [];
+    let cl: JunctionArm[] = [];
+    for (const arm of arms) {
+      if (cl.length > 0 && dist(host.pts[cl[0].idx], host.pts[arm.idx]) > R_CLUSTER) {
+        clusters.push(cl);
+        cl = [];
+      }
+      cl.push(arm);
+    }
+    if (cl.length > 0) clusters.push(cl);
+    for (const cluster of clusters) {
+      const merges = cluster.filter((x) => x.kind === 'merge');
+      const forks = cluster.filter((x) => x.kind === 'fork');
+      const kind: OrganKind | null =
+        merges.length === 1 && forks.length === 1
+          ? 'filter'
+          : merges.length === 2 && forks.length === 1
+            ? 'exchanger'
+            : null;
+      if (!kind) continue;
+      const centerIdx = Math.round(cluster.reduce((s, x) => s + x.idx, 0) / cluster.length);
+      const center = host.pts[centerIdx];
+      // input streams: the host upstream of the cluster, then each merge
+      const hostSense = senseStream(chem, host, Math.min(...cluster.map((x) => x.idx)) - 1, -1);
+      if (!hostSense) continue;
+      const senses: Sense[] = [hostSense];
+      let sensed = true;
+      for (const m of merges) {
+        const s = senseStream(chem, m.vein, m.vein.pts.length - 1, -1);
+        if (!s) {
+          sensed = false;
+          break;
+        }
+        senses.push(s);
+      }
+      if (!sensed) continue;
+      const fueled = senses.map((_, i) => i).filter((i) => senses[i].frac[fuelIdx] > 0.01);
+      let roles: SpawnRoles | null = null;
+      if (kind === 'filter') {
+        const fi = fueled[0];
+        const mi = senses.findIndex(
+          (s, i) => i !== fi && s.frac[rIdx] > 0.4 && s.frac[gIdx] > 0.3 && s.frac[fuelIdx] < 0.01,
+        );
+        if (fueled.length >= 1 && fi !== undefined && mi >= 0) roles = { fuel: fi, mix: mi };
+      } else if (fueled.length === 1) {
+        const rest = [0, 1, 2].filter((i) => i !== fueled[0]);
+        const dT = senses[rest[0]].temp - senses[rest[1]].temp;
+        if (Math.abs(dT) > 0.3) {
+          roles = { fuel: fueled[0], hot: dT > 0 ? rest[0] : rest[1], cold: dT > 0 ? rest[1] : rest[0] };
+        }
+      }
+      if (!roles) continue;
+      const key = `${Math.round(center[0] / 8)},${Math.round(center[1] / 8)}:${kind}`;
+      holding.add(key);
+      const dwell = (w.spawnDwell.get(key) ?? 0) + SPAWN_PERIOD;
+      w.spawnDwell.set(key, dwell);
+      if (dwell >= SPAWN_DWELL && spawnOrganAtJunction(w, host, centerIdx, kind, cluster, roles)) {
+        w.spawnDwell.delete(key);
+        spawned = true; // the network just changed under us: one bud per scan
+        break;
+      }
+    }
+  }
+  // sites whose trigger lapsed cool off twice as fast as they warmed
+  for (const [key, v] of [...w.spawnDwell]) {
+    if (holding.has(key)) continue;
+    const nv = v - SPAWN_PERIOD * 2;
+    if (nv <= 0) w.spawnDwell.delete(key);
+    else w.spawnDwell.set(key, nv);
+  }
+}
+
+// The junction bud: validate the site the way tryBud does, assign every
+// vein end to a port by its role, snip the host at the center, and let
+// ordinary growth + completeBud do the rest. Returns false (leaving the
+// dwell clock at threshold, to retry) if the site can't legally hold an
+// organ.
+function spawnOrganAtJunction(
+  w: World,
+  host: Vein,
+  centerIdx: number,
+  kind: OrganKind,
+  cluster: JunctionArm[],
+  roles: SpawnRoles,
+): boolean {
+  const center = host.pts[centerIdx];
+  if (
+    center[0] - R_ORGAN < 0 || center[1] - R_ORGAN < 0 ||
+    center[0] + R_ORGAN >= WORLD_W || center[1] + R_ORGAN >= WORLD_H
+  ) return false;
+  const inDisc = (pt: Pt) => dist(pt, center) <= R_ORGAN;
+  const n = host.pts.length;
+  let a = centerIdx;
+  while (a - 1 >= 0 && inDisc(host.pts[a - 1])) a--;
+  let b = centerIdx;
+  while (b + 1 < n && inDisc(host.pts[b + 1])) b++;
+  // the host must flow through with ≥2 nodes to spare on both sides
+  if (a < 2 || n - 1 - b < 2) return false;
+  if (!host.inc.slice(a, b + 1).every((v) => v === 1)) return false;
+  // arm membranes: each merge needs ≥2 nodes outside the disc before its
+  // tail, each fork ≥2 after its head; note where each crosses the wall
+  const membrane = new Map<number, Pt>(); // arm vein id -> crossing node
+  for (const arm of cluster) {
+    const v = arm.vein;
+    if (arm.kind === 'merge') {
+      let e = v.pts.length - 1;
+      while (e >= 0 && inDisc(v.pts[e])) e--;
+      if (e < 1 || e === v.pts.length - 1) return false;
+      if (!v.inc.slice(e + 1).every((q) => q === 1)) return false;
+      membrane.set(v.id, v.pts[e + 1]);
+    } else {
+      let s = 0;
+      while (s < v.pts.length && inDisc(v.pts[s])) s++;
+      if (s === 0 || v.pts.length - s < 2) return false;
+      if (!v.inc.slice(0, s).every((q) => q === 1)) return false;
+      membrane.set(v.id, v.pts[s - 1]);
+    }
+  }
+  // no third-party junctions on the doomed stretch — neither on the host's
+  // [a..b] nor on any arm's in-disc portion (they'd dangle into the cavity)
+  const doomed = (vein: Vein, idx: number): boolean => {
+    if (vein.id === host.id) return idx >= a && idx <= b;
+    if (cluster.some((x) => x.vein.id === vein.id)) return inDisc(vein.pts[idx]);
+    return false;
+  };
+  for (const q of w.veins.values()) {
+    if (cluster.some((x) => x.vein.id === q.id)) continue;
+    const checks: Array<{ att: { veinId: number; at: Pt }; end: 'head' | 'tail' }> = [];
+    if (q.head.type === 'fork') checks.push({ att: q.head, end: 'head' });
+    if (q.tail.type === 'merge') checks.push({ att: q.tail, end: 'tail' });
+    for (const { att, end } of checks) {
+      const seg = resolveAttach(w, att, { selfId: q.id, end });
+      if (seg && doomed(seg.vein, seg.idx)) return false;
+    }
+  }
+  // the disc must clear other organs and sources
+  for (const o2 of w.organs.values()) if (dist(o2.c, center) < R_ORGAN + o2.r + 6) return false;
+  for (const s of w.sources) if (dist(s.pt, center) < R_ORGAN + SRC_R + 6) return false;
+
+  // ---- role -> port assignment ----
+  const merges = cluster.filter((x) => x.kind === 'merge');
+  const forks = cluster.filter((x) => x.kind === 'fork');
+  // inputs indexed as in spawnStep: 0 = host upstream, then the merges
+  const inPts: Pt[] = [host.pts[a], ...merges.map((m) => membrane.get(m.vein.id)!)];
+  const outPts: Pt[] = [host.pts[b], ...forks.map((f) => membrane.get(f.vein.id)!)];
+  const theta = (pt: Pt) => Math.atan2(pt[1] - center[1], pt[0] - center[0]);
+  const TAU = Math.PI * 2;
+  const inKeys = new Array<string>(inPts.length);
+  const outKeys = new Array<string>(outPts.length);
+  if (kind === 'filter') {
+    inKeys[roles.mix!] = 'in';
+    inKeys[roles.fuel] = 'fuel';
+    const cw0 = (theta(outPts[0]) - theta(inPts[roles.fuel]) + TAU) % TAU;
+    const cw1 = (theta(outPts[1]) - theta(inPts[roles.fuel]) + TAU) % TAU;
+    outKeys[cw0 <= cw1 ? 0 : 1] = 'out';
+    outKeys[cw0 <= cw1 ? 1 : 0] = 'side';
+  } else {
+    inKeys[roles.hot!] = 'hot-in';
+    inKeys[roles.cold!] = 'cold-in';
+    inKeys[roles.fuel] = 'fuel';
+    const ccw0 = (theta(inPts[roles.hot!]) - theta(outPts[0]) + TAU) % TAU;
+    const ccw1 = (theta(inPts[roles.hot!]) - theta(outPts[1]) + TAU) % TAU;
+    outKeys[ccw0 <= ccw1 ? 0 : 1] = 'hot-out';
+    outKeys[ccw0 <= ccw1 ? 1 : 0] = 'cold-out';
+  }
+  const chamberOf = (key: string) => ORGAN_SPECS[kind].ports.find((p) => p.key === key)!.chamber;
+  const o: Organ = {
+    id: w.nextId++,
+    kind,
+    c: [center[0], center[1]],
+    r: R_ORGAN,
+    ports: [
+      ...inKeys.map((key, i) => ({ key, dir: 'in' as const, chamber: chamberOf(key), pt: [inPts[i][0], inPts[i][1]] as Pt })),
+      ...outKeys.map((key, i) => ({ key, dir: 'out' as const, chamber: chamberOf(key), pt: [outPts[i][0], outPts[i][1]] as Pt })),
+    ],
+    chambers: null,
+    growth: 0,
+    pending: null,
+    load: 0,
+    starve: 0,
+    vents: {},
+  };
+
+  // ---- eat the junction: snip the host at the center (as tryBud does),
+  // retarget the merges to their in-ports, queue everyone's membrane trim
+  let m = centerIdx;
+  if (n - m - 1 === 1) m = centerIdx + 1; // never strand a 1-node orphan
+  const bPts = host.pts.slice(m + 1);
+  let downId: number | null = null;
+  if (bPts.length >= 2) {
+    const B: Vein = {
+      id: w.nextId++,
+      pts: bPts,
+      parcels: host.parcels.slice(m + 1),
+      hist: host.hist.slice(m + 1),
+      flow: host.flow.slice(m + 1),
+      inc: host.inc.slice(m + 1),
+      incTick: host.incTick.slice(m + 1),
+      head: { type: 'open' },
+      tail: host.tail,
+      probed: host.probed,
+    };
+    w.veins.set(B.id, B);
+    downId = B.id;
+  }
+  host.pts = host.pts.slice(0, m + 1);
+  host.parcels = host.parcels.slice(0, m + 1);
+  host.hist = host.hist.slice(0, m + 1);
+  host.flow = host.flow.slice(0, m + 1);
+  host.inc = host.inc.slice(0, m + 1);
+  host.incTick = host.incTick.slice(0, m + 1);
+  host.tail = { type: 'organ-in', organId: o.id, port: inKeys[0] };
+  const trims: NonNullable<Organ['pending']>['trims'] = [{ veinId: host.id, end: 'tail', port: inKeys[0] }];
+  if (downId !== null) trims.push({ veinId: downId, end: 'head', port: outKeys[0] });
+  merges.forEach((arm, i) => {
+    arm.vein.tail = { type: 'organ-in', organId: o.id, port: inKeys[i + 1] };
+    trims.push({ veinId: arm.vein.id, end: 'tail', port: inKeys[i + 1] });
+  });
+  forks.forEach((arm, i) => {
+    trims.push({ veinId: arm.vein.id, end: 'head', port: outKeys[i + 1] });
+  });
+  o.pending = { trims };
+  w.organs.set(o.id, o);
+  reindex(w);
+  return true;
 }
 
 // ---------------- editing ops ----------------
@@ -1140,6 +1485,7 @@ export function snapshotWorld(w: World): World {
     sources: w.sources,
     nodeHash: new NodeHash<Vein>(),
     histCount: 0,
+    spawnDwell: new Map(w.spawnDwell),
   };
   reindex(snap);
   return snap;
